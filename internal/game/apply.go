@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/rules"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/settle"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/pkg/tile"
@@ -21,7 +22,9 @@ func evBase(t *Table, typ ActType, seat int) Event {
 }
 
 func (t *Table) Deal(now time.Time) ([]Event, error) {
+	logx.Tracef("game Deal banker=%d phase=%s", t.Banker, t.Phase)
 	if t.Phase != PhaseIdle {
+		logx.Warnf("game Deal rejected phase=%s", t.Phase)
 		return nil, ErrBadState
 	}
 	for i := 0; i < 13; i++ {
@@ -112,10 +115,13 @@ func (t *Table) replaceFlowers(seat int, announceDraw bool) ([]Event, error) {
 }
 
 func (t *Table) Apply(seat int, act Action, now time.Time) ([]Event, error) {
+	logx.Tracef("game Apply seat=%d phase=%s act=%s turn=%d table_turn=%d", seat, t.Phase, act.Type, act.TurnID, t.TurnID)
 	if t.Finished != nil || t.Phase == PhaseOver {
+		logx.Tracef("game Apply rejected seat=%d reason=finished", seat)
 		return nil, ErrBadState
 	}
 	if act.TurnID != t.TurnID {
+		logx.Warnf("game turn_id mismatch seat=%d got=%d want=%d", seat, act.TurnID, t.TurnID)
 		return nil, ErrBadTurn
 	}
 	switch t.Phase {
@@ -147,6 +153,7 @@ func (t *Table) Tick(now time.Time) ([]Event, error) {
 			}
 			disc = p.Hand[len(p.Hand)-1]
 		}
+		logx.Tracef("game Tick auto-discard seat=%d hosted=%v", t.Current, t.Seats[t.Current].Hosted)
 		return t.Apply(t.Current, Action{TurnID: t.TurnID, Type: ActDiscard, Tile: disc}, now)
 	case PhaseResp, PhaseQiang:
 		for i := 0; i < 4; i++ {
@@ -167,8 +174,10 @@ func (t *Table) Tick(now time.Time) ([]Event, error) {
 			return nil, nil
 		}
 		if t.Phase == PhaseResp {
+			logx.Tracef("game Tick resolve phase=%s", t.Phase)
 			return t.resolveResp(now)
 		}
+		logx.Tracef("game Tick resolve phase=%s", t.Phase)
 		return t.resolveQiang(now)
 	default:
 		return nil, nil
@@ -176,6 +185,7 @@ func (t *Table) Tick(now time.Time) ([]Event, error) {
 }
 
 func (t *Table) applySelf(seat int, act Action, now time.Time) ([]Event, error) {
+	logx.Tracef("game applySelf seat=%d act=%s", seat, act.Type)
 	if seat != t.Current {
 		return nil, ErrNotYourTurn
 	}
@@ -200,6 +210,7 @@ func (t *Table) applySelf(seat int, act Action, now time.Time) ([]Event, error) 
 }
 
 func (t *Table) doDiscard(seat int, x tile.Tile, now time.Time) ([]Event, error) {
+	logx.Tracef("game doDiscard seat=%d tile=%s wall=%d", seat, x, t.wallLeft())
 	p := &t.Seats[seat]
 	next, ok := tile.RemoveN(p.Hand, x, 1)
 	if !ok {
@@ -590,12 +601,14 @@ func (t *Table) announceDraw(seat int, x tile.Tile) ([]Event, error) {
 }
 
 func (t *Table) tryHu(seat int, zimo bool, win tile.Tile, gang bool, now time.Time) ([]Event, error) {
+	logx.Tracef("game tryHu seat=%d zimo=%v gang=%v win=%s", seat, zimo, gang, win)
 	if t.Judge == nil {
 		return nil, ErrBadState
 	}
 	ctx := t.Context(seat, win, zimo, gang)
 	legal, wrong, fr := t.Judge(ctx)
 	if wrong || !legal {
+		logx.Warnf("game wrong hu seat=%d fan=%d fans=%s", seat, fr.TotalFan, settle.FormatFans(fr.Items))
 		res := settle.Result{Kind: settle.KindWrong, Winner: -1, Discarder: t.LastDiscarder, Items: fr.Items, StartFan: fr.TotalFan - fr.FlowerFan, Fan: fr.TotalFan}
 		res.Scores = settle.PayWrong(seat)
 		return t.finish(res)
@@ -629,6 +642,7 @@ func (t *Table) finish(res settle.Result) ([]Event, error) {
 	t.Phase = PhaseOver
 	t.Finished = &res
 	t.bump()
+	logx.Infof("game finished kind=%s winner=%d fan=%d start=%d fans=%s scores=%v", settle.KindName(res.Kind), res.Winner, res.Fan, res.StartFan, settle.FormatFans(res.Items), res.Scores)
 	return []Event{{Type: 0, Settle: &res, TurnID: t.TurnID, WallLeft: t.wallLeft(), PrivateSeat: -1,
 		DealHands: [4][]tile.Tile{
 			append([]tile.Tile(nil), t.Seats[0].Hand...),

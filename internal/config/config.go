@@ -9,15 +9,17 @@ import (
 )
 
 type Config struct {
-	HTTPAddr         string
-	DataDir          string
-	TokenTTL         time.Duration
-	ActionTimeout    time.Duration
-	Reconnect        time.Duration
-	MaxConns         int
-	MaxRooms         int
-	ChatMaxBytes     int
-	Pprof            bool
+	HTTPAddr      string
+	DataDir       string
+	TokenTTL      time.Duration
+	ActionTimeout time.Duration
+	Reconnect     time.Duration
+	MaxConns      int
+	MaxRooms      int
+	ChatMaxBytes  int
+	Pprof         bool
+	GMToken       string
+	LogLevel      string
 }
 
 func Default() Config {
@@ -31,6 +33,7 @@ func Default() Config {
 		MaxRooms:      2000,
 		ChatMaxBytes:  64,
 		Pprof:         true,
+		LogLevel:      "info",
 	}
 }
 
@@ -84,6 +87,12 @@ func Load(path string) Config {
 			}
 		case "pprof":
 			cfg.Pprof = v == "true" || v == "1"
+		case "gm_token":
+			cfg.GMToken = v
+		case "log_level":
+			if v != "" {
+				cfg.LogLevel = strings.ToLower(v)
+			}
 		}
 	}
 	return cfg

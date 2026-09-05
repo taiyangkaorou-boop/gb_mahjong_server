@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 )
 
 type Conn struct {
@@ -23,6 +24,7 @@ func (c *Conn) Send(b []byte) {
 	select {
 	case c.send <- b:
 	default:
+		logx.Warnf("netx send queue full uid=%d", c.UID)
 	}
 }
 
@@ -36,6 +38,7 @@ func (c *Conn) Close() {
 }
 
 func (c *Conn) WriteLoop() {
+	defer logx.Recover("netx.WriteLoop")
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	for {
@@ -45,11 +48,13 @@ func (c *Conn) WriteLoop() {
 		case b := <-c.send:
 			_ = c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err := c.ws.WriteMessage(websocket.BinaryMessage, b); err != nil {
+				logx.Warnf("netx write uid=%d: %v", c.UID, err)
 				return
 			}
 		case <-t.C:
 			_ = c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err := c.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				logx.Warnf("netx ping uid=%d: %v", c.UID, err)
 				return
 			}
 		}

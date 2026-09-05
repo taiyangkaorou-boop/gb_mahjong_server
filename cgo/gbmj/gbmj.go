@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"unsafe"
 
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/pkg/tile"
 )
 
@@ -39,7 +40,9 @@ func JudgeHu(handStr string) (bool, error) {
 	var hu C.int
 	rc := C.gbmj_judge_hu(cs, &hu)
 	if rc != C.GBMJ_OK {
-		return false, fmt.Errorf("gbmj judge_hu rc=%d str=%q", int(rc), handStr)
+		err := fmt.Errorf("gbmj judge_hu rc=%d str=%q", int(rc), handStr)
+		logx.Errorf("%v", err)
+		return false, err
 	}
 	return hu != 0, nil
 }
@@ -51,7 +54,9 @@ func CountFan(handStr string) (FanResult, error) {
 	var out C.gbmj_fan_result
 	rc := C.gbmj_count_fan(cs, &out)
 	if rc != C.GBMJ_OK {
-		return FanResult{}, fmt.Errorf("gbmj count_fan rc=%d str=%q", int(rc), handStr)
+		err := fmt.Errorf("gbmj count_fan rc=%d str=%q", int(rc), handStr)
+		logx.Errorf("%v", err)
+		return FanResult{}, err
 	}
 	n := int(out.n_fan)
 	if n < 0 {
@@ -75,7 +80,9 @@ func CalcTing(handStr string) ([]tile.Tile, error) {
 	var n C.int
 	rc := C.gbmj_calc_ting(cs, (*C.uchar)(unsafe.Pointer(&buf[0])), C.int(len(buf)), &n)
 	if rc != C.GBMJ_OK {
-		return nil, fmt.Errorf("gbmj calc_ting rc=%d str=%q", int(rc), handStr)
+		err := fmt.Errorf("gbmj calc_ting rc=%d str=%q", int(rc), handStr)
+		logx.Errorf("%v", err)
+		return nil, err
 	}
 	out := make([]tile.Tile, 0, int(n))
 	lim := int(n)

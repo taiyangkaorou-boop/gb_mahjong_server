@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/persist/memory"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/persist/sqlite"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/user"
@@ -44,6 +45,7 @@ func (s *Service) AllowChat(uid int64, now time.Time) bool {
 	}
 	b.last = now
 	if b.tokens < 1 {
+		logx.Warnf("social chat rate limited uid=%d", uid)
 		return false
 	}
 	b.tokens--
@@ -51,20 +53,36 @@ func (s *Service) AllowChat(uid int64, now time.Time) bool {
 }
 
 func (s *Service) Ask(from, to int64) error {
+	logx.Tracef("social Ask from=%d to=%d", from, to)
 	if from == to || to <= 0 {
+		logx.Warnf("social Ask rejected from=%d to=%d", from, to)
 		return errors.New("bad peer")
 	}
 	if s.DB.AreFriends(from, to) {
+		logx.Tracef("social Ask already friends from=%d to=%d", from, to)
 		return nil
 	}
-	return s.DB.AddFriendRequest(from, to)
+	if err := s.DB.AddFriendRequest(from, to); err != nil {
+		return err
+	}
+	logx.Infof("social friend request from=%d to=%d", from, to)
+	return nil
 }
 
 func (s *Service) Respond(uid, from int64, accept bool) error {
+	logx.Tracef("social Respond uid=%d from=%d accept=%v", uid, from, accept)
 	if accept {
-		return s.DB.AddFriends(from, uid)
+		if err := s.DB.AddFriends(from, uid); err != nil {
+			return err
+		}
+		logx.Infof("social friend accepted uid=%d peer=%d", uid, from)
+		return nil
 	}
-	return s.DB.DeleteFriendRequest(from, uid)
+	if err := s.DB.DeleteFriendRequest(from, uid); err != nil {
+		return err
+	}
+	logx.Infof("social friend rejected uid=%d peer=%d", uid, from)
+	return nil
 }
 
 type Item struct {

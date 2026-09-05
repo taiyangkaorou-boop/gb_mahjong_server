@@ -1,6 +1,10 @@
 package settle
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/rules"
+)
 
 func TestPayZimo(t *testing.T) {
 	s := PayHu(true, 12, 0, -1)
@@ -21,6 +25,20 @@ func TestPayWrong(t *testing.T) {
 	s := PayWrong(2)
 	if s[2] != -30 || s[0] != 10 || s[1] != 10 || s[3] != 10 {
 		t.Fatalf("%v", s)
+	}
+}
+
+func TestFormatFans(t *testing.T) {
+	if FormatFans(nil) != "-" {
+		t.Fatal("empty")
+	}
+	got := FormatFans([]rules.FanItem{
+		{ID: 19, Score: 24, Name: "七对"},
+		{ID: 80, Score: 1},
+	})
+	want := "七对(19):24,自摸(80):1"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }
 

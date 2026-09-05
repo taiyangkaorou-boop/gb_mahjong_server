@@ -1,6 +1,12 @@
 package settle
 
-import "github.com/taiyangkaorou-boop/GB_mahjong_server/internal/rules"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/rules"
+)
 
 const (
 	KindHuang = 0
@@ -14,6 +20,40 @@ const (
 	MinStartFan = 8
 	BasePay     = 8
 )
+
+// KindName 把结算种类写成短英文，给日志用。
+func KindName(k int) string {
+	switch k {
+	case KindHuang:
+		return "huang"
+	case KindZimo:
+		return "zimo"
+	case KindRon:
+		return "ron"
+	case KindQiang:
+		return "qiang"
+	case KindWrong:
+		return "wrong"
+	default:
+		return "unknown"
+	}
+}
+
+// FormatFans 把番种列表写成日志用的一串，例如 七对(19):24,自摸(80):1。没有番种时为 "-"。
+func FormatFans(items []rules.FanItem) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		name := it.Name
+		if name == "" {
+			name = rules.NameOf(it.ID)
+		}
+		parts = append(parts, fmt.Sprintf("%s(%d):%d", name, it.ID, it.Score))
+	}
+	return strings.Join(parts, ",")
+}
 
 // Result 一局结算。
 type Result struct {
@@ -29,6 +69,7 @@ type Result struct {
 // Evaluate 检查报和是否合法。legal=成牌且起和番够；wrong=报了但不能和。
 func Evaluate(eng rules.Engine, ctx rules.HandContext) (legal, wrong bool, fr rules.FanResult, err error) {
 	if eng == nil {
+		logx.Tracef("settle Evaluate no engine")
 		return false, true, fr, nil
 	}
 	ok, err := eng.JudgeHu(ctx)
@@ -36,6 +77,7 @@ func Evaluate(eng rules.Engine, ctx rules.HandContext) (legal, wrong bool, fr ru
 		return false, false, fr, err
 	}
 	if !ok {
+		logx.Tracef("settle Evaluate not hu")
 		return false, true, fr, nil
 	}
 	fr, err = eng.CountFan(ctx)
@@ -44,8 +86,10 @@ func Evaluate(eng rules.Engine, ctx rules.HandContext) (legal, wrong bool, fr ru
 	}
 	start := fr.TotalFan - fr.FlowerFan
 	if start < MinStartFan {
+		logx.Tracef("settle Evaluate below min start=%d fan=%d", start, fr.TotalFan)
 		return false, true, fr, nil
 	}
+	logx.Tracef("settle Evaluate legal fan=%d start=%d", fr.TotalFan, start)
 	return true, false, fr, nil
 }
 

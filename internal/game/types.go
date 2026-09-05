@@ -1,6 +1,7 @@
 package game
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -19,6 +20,23 @@ const (
 	PhaseOver
 )
 
+func (p Phase) String() string {
+	switch p {
+	case PhaseIdle:
+		return "idle"
+	case PhaseSelfAct:
+		return "self"
+	case PhaseResp:
+		return "resp"
+	case PhaseQiang:
+		return "qiang"
+	case PhaseOver:
+		return "over"
+	default:
+		return fmt.Sprintf("phase(%d)", int(p))
+	}
+}
+
 type ActType int
 
 const (
@@ -33,6 +51,33 @@ const (
 	ActDraw
 	ActBuhua
 )
+
+func (a ActType) String() string {
+	switch a {
+	case ActPass:
+		return "pass"
+	case ActDiscard:
+		return "discard"
+	case ActChi:
+		return "chi"
+	case ActPeng:
+		return "peng"
+	case ActGangMing:
+		return "gang_ming"
+	case ActAnGang:
+		return "gang_an"
+	case ActJiaGang:
+		return "gang_jia"
+	case ActHu:
+		return "hu"
+	case ActDraw:
+		return "draw"
+	case ActBuhua:
+		return "buhua"
+	default:
+		return fmt.Sprintf("act(%d)", int(a))
+	}
+}
 
 type Action struct {
 	TurnID uint32

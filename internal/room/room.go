@@ -4,11 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/ai"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/game"
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/pb"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/rules"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/settle"
@@ -37,6 +38,7 @@ type Manager struct {
 	timeout  time.Duration
 	maxRooms int
 	friends  func(a, b int64) bool
+	nextBot  int64
 }
 
 func NewManager(push PushFunc, users *user.Service, eng rules.Engine, timeout time.Duration, maxRooms int, friends func(a, b int64) bool) *Manager {
@@ -49,6 +51,7 @@ func NewManager(push PushFunc, users *user.Service, eng rules.Engine, timeout ti
 		timeout:  timeout,
 		maxRooms: maxRooms,
 		friends:  friends,
+		nextBot:  -1,
 	}
 }
 
@@ -68,9 +71,11 @@ func (m *Manager) Create(uid int64) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.byUser[uid] != "" {
+		logx.Warnf("room create rejected uid=%d reason=busy", uid)
 		return "", ErrBusy
 	}
 	if len(m.rooms) >= m.maxRooms {
+		logx.Warnf("room create rejected uid=%d reason=max_rooms", uid)
 		return "", ErrFull
 	}
 	id := m.newID()
@@ -78,6 +83,7 @@ func (m *Manager) Create(uid int64) (string, error) {
 	m.rooms[id] = r
 	m.byUser[uid] = id
 	go r.loop()
+	logx.Infof("room created room=%s uid=%d", id, uid)
 	return id, nil
 }
 
@@ -85,11 +91,13 @@ func (m *Manager) Join(uid int64, id string) error {
 	m.mu.Lock()
 	if m.byUser[uid] != "" && m.byUser[uid] != id {
 		m.mu.Unlock()
+		logx.Warnf("room join rejected uid=%d room=%s reason=busy", uid, id)
 		return ErrBusy
 	}
 	r := m.rooms[id]
 	m.mu.Unlock()
 	if r == nil {
+		logx.Warnf("room join uid=%d room=%s: not found", uid, id)
 		return ErrNotFound
 	}
 	return r.submit(cmd{kind: cmdJoin, uid: uid})
@@ -170,6 +178,12 @@ func (m *Manager) Disconnect(uid int64) {
 	_ = m.fwd(uid, cmd{kind: cmdDisconnect, uid: uid})
 }
 
+func (m *Manager) roomByID(id string) *Room {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rooms[id]
+}
+
 func (m *Manager) fwd(uid int64, c cmd) error {
 	m.mu.Lock()
 	id := m.byUser[uid]
@@ -192,6 +206,8 @@ const (
 	cmdInvite
 	cmdSync
 	cmdDisconnect
+	cmdAddBot
+	cmdSnap
 )
 
 type cmd struct {
@@ -202,6 +218,8 @@ type cmd struct {
 	ready  bool
 	act    game.Action
 	errc   chan error
+	added  *int
+	snap   *RoomSnap
 }
 
 type Room struct {
@@ -209,6 +227,8 @@ type Room struct {
 	owner   int64
 	seats   [4]int64
 	ready   [4]bool
+	bot     [4]bool
+	views   [4]*ai.View
 	inbox   chan cmd
 	quit    chan struct{}
 	table   *game.Table
@@ -232,6 +252,13 @@ func (r *Room) submit(c cmd) error {
 }
 
 func (r *Room) loop() {
+	defer func() {
+		if p := recover(); p != nil {
+			logx.Errorf("panic recovered where=room.loop room=%s panic=%v", r.id, p)
+			r.mgr.drop(r.id)
+			r.closeQuit()
+		}
+	}()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -239,26 +266,72 @@ func (r *Room) loop() {
 		case <-r.quit:
 			return
 		case c := <-r.inbox:
-			c.errc <- r.handle(c)
+			r.serve(c)
 		case now := <-tick.C:
 			if r.table != nil && r.table.Finished == nil {
 				evs, err := r.table.Tick(now)
 				if err != nil {
-					log.Printf("room %s tick: %v", r.id, err)
+					logx.Errorf("room tick room=%s: %v", r.id, err)
 					continue
 				}
-				r.emit(evs)
-				if r.table.Finished != nil {
-					r.table = nil
-					r.clearReady()
-					r.broadcastState("")
-				}
+				r.afterEvents(evs)
 			}
 		}
 	}
 }
 
+// serve 处理一条房间命令；panic 时回错误，避免 submit 永远卡住。
+func (r *Room) serve(c cmd) {
+	defer func() {
+		if p := recover(); p != nil {
+			logx.Errorf("panic recovered where=room.handle room=%s cmd=%s uid=%d panic=%v", r.id, cmdName(c.kind), c.uid, p)
+			select {
+			case c.errc <- ErrState:
+			default:
+			}
+		}
+	}()
+	c.errc <- r.handle(c)
+}
+
+func (r *Room) closeQuit() {
+	defer func() { _ = recover() }()
+	close(r.quit)
+}
+
+func cmdName(k int) string {
+	switch k {
+	case cmdJoin:
+		return "join"
+	case cmdSit:
+		return "sit"
+	case cmdReady:
+		return "ready"
+	case cmdKick:
+		return "kick"
+	case cmdStart:
+		return "start"
+	case cmdLeave:
+		return "leave"
+	case cmdAct:
+		return "act"
+	case cmdInvite:
+		return "invite"
+	case cmdSync:
+		return "sync"
+	case cmdDisconnect:
+		return "disconnect"
+	case cmdAddBot:
+		return "addbot"
+	case cmdSnap:
+		return "snap"
+	default:
+		return "unknown"
+	}
+}
+
 func (r *Room) handle(c cmd) error {
+	logx.Tracef("room handle room=%s cmd=%s uid=%d", r.id, cmdName(c.kind), c.uid)
 	switch c.kind {
 	case cmdJoin:
 		return r.join(c.uid)
@@ -292,19 +365,36 @@ func (r *Room) handle(c cmd) error {
 			return nil
 		}
 		return r.leave(c.uid)
+	case cmdAddBot:
+		n, err := r.addBots()
+		if c.added != nil {
+			*c.added = n
+		}
+		if c.snap != nil {
+			*c.snap = r.snapshot()
+		}
+		return err
+	case cmdSnap:
+		if c.snap != nil {
+			*c.snap = r.snapshot()
+		}
+		return nil
 	default:
+		logx.Warnf("room unknown cmd room=%s kind=%d uid=%d", r.id, c.kind, c.uid)
 		return ErrState
 	}
 }
 
 func (r *Room) join(uid int64) error {
 	if len(r.members) >= 8 {
+		logx.Warnf("room join rejected room=%s uid=%d reason=full", r.id, uid)
 		return ErrFull
 	}
 	r.members[uid] = struct{}{}
 	r.mgr.mu.Lock()
 	r.mgr.bindLocked(uid, r.id)
 	r.mgr.mu.Unlock()
+	logx.Infof("room join room=%s uid=%d members=%d", r.id, uid, len(r.members))
 	r.broadcastState("")
 	return nil
 }
@@ -321,13 +411,13 @@ func (r *Room) sit(uid int64, seat int) error {
 	}
 	for i := 0; i < 4; i++ {
 		if r.seats[i] == uid {
-			r.seats[i] = 0
-			r.ready[i] = false
+			r.clearSeat(i)
 		}
 	}
 	if r.seats[seat] != 0 && r.seats[seat] != uid {
 		return ErrFull
 	}
+	r.clearSeat(seat)
 	r.seats[seat] = uid
 	r.mgr.mu.Lock()
 	r.mgr.bindLocked(uid, r.id)
@@ -363,13 +453,13 @@ func (r *Room) kick(uid, target int64) error {
 	delete(r.members, target)
 	for i := 0; i < 4; i++ {
 		if r.seats[i] == target {
-			r.seats[i] = 0
-			r.ready[i] = false
+			r.clearSeat(i)
 		}
 	}
 	r.mgr.mu.Lock()
 	r.mgr.unbindLocked(target, r.id)
 	r.mgr.mu.Unlock()
+	logx.Infof("room kick room=%s uid=%d target=%d", r.id, uid, target)
 	r.broadcastState("")
 	return nil
 }
@@ -384,7 +474,7 @@ func (r *Room) start(uid int64) error {
 	var uids [4]int64
 	for i := 0; i < 4; i++ {
 		if r.seats[i] == 0 || !r.ready[i] {
-			log.Printf("room %s start denied: seat %d uid=%d ready=%v", r.id, i, r.seats[i], r.ready[i])
+			logx.Warnf("room start denied room=%s seat=%d uid=%d ready=%v", r.id, i, r.seats[i], r.ready[i])
 			return ErrState
 		}
 		uids[i] = r.seats[i]
@@ -393,25 +483,21 @@ func (r *Room) start(uid int64) error {
 	judge := func(ctx rules.HandContext) (bool, bool, rules.FanResult) {
 		legal, wrong, fr, err := settle.Evaluate(eng, ctx)
 		if err != nil {
-			log.Printf("judge: %v", err)
+			logx.Errorf("room judge room=%s: %v", r.id, err)
 			return false, true, fr
 		}
 		return legal, wrong, fr
 	}
 	r.table = game.NewTable(uids, 0, r.mgr.timeout, judge, nil)
+	r.initBotViews()
 	evs, err := r.table.Deal(time.Now())
 	if err != nil {
 		r.table = nil
-		log.Printf("room %s deal: %v", r.id, err)
+		logx.Errorf("room deal room=%s: %v", r.id, err)
 		return err
 	}
-	log.Printf("room %s started", r.id)
-	r.emit(evs)
-	if r.table != nil && r.table.Finished != nil {
-		r.table = nil
-		r.clearReady()
-		r.broadcastState("")
-	}
+	logx.Infof("room started room=%s", r.id)
+	r.afterEvents(evs)
 	return nil
 }
 
@@ -422,18 +508,19 @@ func (r *Room) leave(uid int64) error {
 	delete(r.members, uid)
 	for i := 0; i < 4; i++ {
 		if r.seats[i] == uid {
-			r.seats[i] = 0
-			r.ready[i] = false
+			r.clearSeat(i)
 		}
 	}
 	r.mgr.mu.Lock()
 	r.mgr.unbindLocked(uid, r.id)
 	r.mgr.mu.Unlock()
 	if uid == r.owner {
+		logx.Infof("room dismissed room=%s owner=%d", r.id, uid)
 		r.mgr.drop(r.id)
 		close(r.quit)
 		return nil
 	}
+	logx.Infof("room leave room=%s uid=%d", r.id, uid)
 	r.broadcastState("")
 	return nil
 }
@@ -445,20 +532,16 @@ func (r *Room) host(uid int64) {
 	for i := 0; i < 4; i++ {
 		if r.seats[i] == uid {
 			r.table.Seats[i].Hosted = true
+			logx.Warnf("room hosted room=%s uid=%d seat=%d", r.id, uid, i)
 			break
 		}
 	}
 	evs, err := r.table.Tick(time.Now())
 	if err != nil {
-		log.Printf("room %s host: %v", r.id, err)
+		logx.Errorf("room host tick room=%s uid=%d: %v", r.id, uid, err)
 		return
 	}
-	r.emit(evs)
-	if r.table.Finished != nil {
-		r.table = nil
-		r.clearReady()
-		r.broadcastState("")
-	}
+	r.afterEvents(evs)
 }
 
 func (r *Room) act(uid int64, act game.Action) error {
@@ -477,14 +560,10 @@ func (r *Room) act(uid int64, act game.Action) error {
 	}
 	evs, err := r.table.Apply(seat, act, time.Now())
 	if err != nil {
+		logx.Warnf("room action rejected room=%s uid=%d seat=%d act=%s: %v", r.id, uid, seat, act.Type, err)
 		return err
 	}
-	r.emit(evs)
-	if r.table.Finished != nil {
-		r.table = nil
-		r.clearReady()
-		r.broadcastState("")
-	}
+	r.afterEvents(evs)
 	return nil
 }
 
@@ -498,8 +577,30 @@ func (r *Room) invite(uid, peer int64) error {
 
 func (r *Room) clearReady() {
 	for i := 0; i < 4; i++ {
-		r.ready[i] = false
+		r.ready[i] = r.bot[i]
+		r.views[i] = nil
 	}
+}
+
+func (r *Room) clearSeat(i int) {
+	r.seats[i] = 0
+	r.ready[i] = false
+	r.bot[i] = false
+	r.views[i] = nil
+}
+
+func (r *Room) seatName(i int) string {
+	uid := r.seats[i]
+	if uid == 0 {
+		return ""
+	}
+	if r.bot[i] {
+		return botDisplayName(i)
+	}
+	if r.mgr.users == nil {
+		return ""
+	}
+	return r.mgr.users.Name(uid)
 }
 
 func (r *Room) state(hint string) *pb.S2CRoomState {
@@ -508,12 +609,7 @@ func (r *Room) state(hint string) *pb.S2CRoomState {
 		st.Phase = uint32(r.table.Phase)
 	}
 	for i := 0; i < 4; i++ {
-		uid := r.seats[i]
-		info := &pb.SeatInfo{Uid: uid, Ready: r.ready[i]}
-		if uid != 0 {
-			info.Name = r.mgr.users.Name(uid)
-		}
-		st.Seats[i] = info
+		st.Seats[i] = &pb.SeatInfo{Uid: r.seats[i], Name: r.seatName(i), Ready: r.ready[i]}
 	}
 	return st
 }
@@ -587,6 +683,7 @@ func tilesBytes(ts []tile.Tile) []byte {
 
 func (r *Room) emitOne(ev game.Event) {
 	if ev.Settle != nil {
+		logx.Infof("room settle room=%s kind=%s fan=%d winner=%d fans=%s scores=%v", r.id, settle.KindName(ev.Settle.Kind), ev.Settle.Fan, ev.Settle.Winner, settle.FormatFans(ev.Settle.Items), ev.Settle.Scores)
 		msg := &pb.S2CSettle{
 			Winner:    uint32(max0(ev.Settle.Winner)),
 			HuKind:    int32(ev.Settle.Kind),
@@ -614,6 +711,7 @@ func (r *Room) emitOne(ev game.Event) {
 		return
 	}
 	if ev.IsDeal {
+		logx.Tracef("room emit deal room=%s banker=%d turn=%d", r.id, ev.Banker, ev.TurnID)
 		for i := 0; i < 4; i++ {
 			if r.seats[i] == 0 {
 				continue
@@ -637,6 +735,7 @@ func (r *Room) emitOne(ev game.Event) {
 		Tiles:    tilesBytes(ev.Tiles),
 		WallLeft: uint32(ev.WallLeft),
 	}
+	logx.Tracef("room emit room=%s act=%s seat=%d turn=%d", r.id, ev.Type, ev.Seat, ev.TurnID)
 	if ev.Type == game.ActAnGang {
 		msg.Tile = 0
 		msg.Tiles = nil

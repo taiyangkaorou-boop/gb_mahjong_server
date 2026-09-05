@@ -8,6 +8,7 @@ import (
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/game"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/pb"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/persist/sqlite"
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/rules"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/user"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/pkg/tile"
 	"google.golang.org/protobuf/proto"
@@ -223,4 +224,114 @@ func TestInGameDisconnectKeepsSeat(t *testing.T) {
 		t.Fatal("in-game leave should not unbind")
 	}
 	_ = m.Leave(1)
+}
+
+func TestAddBotsFillsEmptySeats(t *testing.T) {
+	users := &user.Service{}
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	id, err := m.Create(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Leave(1)
+	if err := m.Sit(1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ready(1, true); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.AddBots(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Added != 3 {
+		t.Fatalf("added=%d want 3", snap.Added)
+	}
+	bots := 0
+	for i, s := range snap.Seats {
+		if s.UID == 0 {
+			t.Fatalf("seat %d empty", i)
+		}
+		if s.Bot {
+			bots++
+			if !s.Ready {
+				t.Fatalf("bot seat %d not ready", i)
+			}
+			if s.Name != botDisplayName(i) {
+				t.Fatalf("seat %d name %q", i, s.Name)
+			}
+			if s.UID >= 0 {
+				t.Fatalf("bot uid should be negative, got %d", s.UID)
+			}
+		}
+	}
+	if bots != 3 {
+		t.Fatalf("bots=%d", bots)
+	}
+	if snap.Seats[0].UID != 1 || snap.Seats[0].Bot {
+		t.Fatalf("seat0 %+v", snap.Seats[0])
+	}
+	if _, err := m.AddBots(id); err != ErrFull {
+		t.Fatalf("second addbot: %v", err)
+	}
+	if _, err := m.AddBots("000000"); err != ErrNotFound {
+		t.Fatalf("missing room: %v", err)
+	}
+}
+
+func TestAddBotsRejectsInGame(t *testing.T) {
+	users := &user.Service{}
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	id := fourReady(t, m)
+	defer m.Leave(1)
+	if err := m.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AddBots(id); err != ErrState {
+		t.Fatalf("in-game addbot: %v", err)
+	}
+}
+
+func TestAddBotsFourPlaySettle(t *testing.T) {
+	users := &user.Service{}
+	settled := false
+	m := NewManager(func(uid int64, cmd pb.Cmd, _ int32, _ proto.Message) {
+		if cmd == pb.Cmd_S2C_SETTLE {
+			settled = true
+		}
+	}, users, rules.NewCGOEngine(), time.Second, 10, nil)
+	id, err := m.Create(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Leave(1)
+	snap, err := m.AddBots(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Added != 4 {
+		t.Fatalf("added=%d want 4", snap.Added)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.Snapshot(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Phase != 0 {
+		t.Fatalf("want idle after 4-bot hand, phase=%d settled=%v", after.Phase, settled)
+	}
+	if !settled {
+		t.Fatal("expected settle push")
+	}
+	readyBots := 0
+	for _, s := range after.Seats {
+		if s.Bot && s.Ready {
+			readyBots++
+		}
+	}
+	if readyBots != 4 {
+		t.Fatalf("bots should stay ready after settle, got %d", readyBots)
+	}
 }

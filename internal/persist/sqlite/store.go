@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	_ "modernc.org/sqlite"
 )
 
@@ -16,15 +17,25 @@ func Open(path string) (*Store, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
+		logx.Errorf("sqlite open path=%s: %v", path, err)
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
+		logx.Errorf("sqlite migrate: %v", err)
 		db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+func sqlErr(op string, err error) error {
+	if err == nil || err == sql.ErrNoRows {
+		return err
+	}
+	logx.Errorf("sqlite %s: %v", op, err)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -74,30 +85,30 @@ func (s *Store) CreateUser(name string, hash []byte) (int64, error) {
 func (s *Store) UserByName(name string) (User, error) {
 	var u User
 	err := s.db.QueryRow(`SELECT id, name, pass_hash FROM users WHERE name=?`, name).Scan(&u.ID, &u.Name, &u.PassHash)
-	return u, err
+	return u, sqlErr("UserByName", err)
 }
 
 func (s *Store) UserByID(id int64) (User, error) {
 	var u User
 	err := s.db.QueryRow(`SELECT id, name, pass_hash FROM users WHERE id=?`, id).Scan(&u.ID, &u.Name, &u.PassHash)
-	return u, err
+	return u, sqlErr("UserByID", err)
 }
 
 func (s *Store) PutSession(token string, uid int64, exp time.Time) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO sessions(token, uid, expire_at) VALUES(?,?,?)`, token, uid, exp.Unix())
-	return err
+	return sqlErr("PutSession", err)
 }
 
 func (s *Store) Session(token string) (uid int64, exp time.Time, err error) {
 	var unix int64
 	err = s.db.QueryRow(`SELECT uid, expire_at FROM sessions WHERE token=?`, token).Scan(&uid, &unix)
 	exp = time.Unix(unix, 0)
-	return
+	return uid, exp, sqlErr("Session", err)
 }
 
 func (s *Store) DeleteSessionsOf(uid int64) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE uid=?`, uid)
-	return err
+	return sqlErr("DeleteSessionsOf", err)
 }
 
 func pair(a, b int64) (int64, int64) {
@@ -109,49 +120,55 @@ func pair(a, b int64) (int64, int64) {
 
 func (s *Store) AddFriendRequest(from, to int64) error {
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO friend_requests(from_uid, to_uid) VALUES(?,?)`, from, to)
-	return err
+	return sqlErr("AddFriendRequest", err)
 }
 
 func (s *Store) DeleteFriendRequest(from, to int64) error {
 	_, err := s.db.Exec(`DELETE FROM friend_requests WHERE from_uid=? AND to_uid=?`, from, to)
-	return err
+	return sqlErr("DeleteFriendRequest", err)
 }
 
 func (s *Store) AddFriends(a, b int64) error {
 	x, y := pair(a, b)
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return sqlErr("AddFriends begin", err)
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO friends(uid_a, uid_b) VALUES(?,?)`, x, y); err != nil {
 		tx.Rollback()
-		return err
+		return sqlErr("AddFriends insert", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM friend_requests WHERE (from_uid=? AND to_uid=?) OR (from_uid=? AND to_uid=?)`, a, b, b, a); err != nil {
 		tx.Rollback()
-		return err
+		return sqlErr("AddFriends delete request", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return sqlErr("AddFriends commit", err)
+	}
+	return nil
 }
 
 func (s *Store) AreFriends(a, b int64) bool {
 	x, y := pair(a, b)
 	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(1) FROM friends WHERE uid_a=? AND uid_b=?`, x, y).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM friends WHERE uid_a=? AND uid_b=?`, x, y).Scan(&n)
+	if err != nil && err != sql.ErrNoRows {
+		logx.Errorf("sqlite AreFriends: %v", err)
+	}
 	return n > 0
 }
 
 func (s *Store) FriendsOf(uid int64) ([]int64, error) {
 	rows, err := s.db.Query(`SELECT uid_a, uid_b FROM friends WHERE uid_a=? OR uid_b=?`, uid, uid)
 	if err != nil {
-		return nil, err
+		return nil, sqlErr("FriendsOf", err)
 	}
 	defer rows.Close()
 	var out []int64
 	for rows.Next() {
 		var a, b int64
 		if err := rows.Scan(&a, &b); err != nil {
-			return nil, err
+			return nil, sqlErr("FriendsOf scan", err)
 		}
 		if a == uid {
 			out = append(out, b)
@@ -159,22 +176,22 @@ func (s *Store) FriendsOf(uid int64) ([]int64, error) {
 			out = append(out, a)
 		}
 	}
-	return out, rows.Err()
+	return out, sqlErr("FriendsOf rows", rows.Err())
 }
 
 func (s *Store) PendingTo(uid int64) ([]int64, error) {
 	rows, err := s.db.Query(`SELECT from_uid FROM friend_requests WHERE to_uid=?`, uid)
 	if err != nil {
-		return nil, err
+		return nil, sqlErr("PendingTo", err)
 	}
 	defer rows.Close()
 	var out []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, sqlErr("PendingTo scan", err)
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	return out, sqlErr("PendingTo rows", rows.Err())
 }

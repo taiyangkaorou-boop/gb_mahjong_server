@@ -24,6 +24,7 @@ git checkout dev    # 要改代码时切到开发分支
 | 好友 | 申请、同意、在线同步、邀请进房 | `C2S_FRIEND_*` `C2S_ROOM_INVITE` |
 | 世界聊天 | 每用户 2 条/秒，突发 4，正文最多 64 字节 | `C2S_CHAT` |
 | 房间 | 6 位房号，房主开局/踢人/解散 | `C2S_ROOM_*` |
+| GM 填充电脑 | 网页把房间空位填成电脑，AI 与内置机器人相同 | 浏览器打开 `/gm` |
 | 对局 | 国标单局：补花、庄先打、吃碰杠胡、截和、荒庄 | `C2S_ACTION` |
 | 结算 | 8 番起和（不含花）、底分 8 拆账、错和 -30 | `S2C_SETTLE` |
 
@@ -57,6 +58,8 @@ go run ./cmd/bot -addr http://127.0.0.1:8080 -n 4
 健康检查：`curl http://127.0.0.1:8080/healthz` 应返回 `ok`。
 
 数据文件默认 `./data/gbmj.db`。本机 8080 被占用时可改 `http_addr`，或用 `./server configs/dev.yaml`（18080）。pprof：`http://127.0.0.1:8080/debug/pprof/`。
+
+GM 页面：服务器起来后用浏览器打开 `http://127.0.0.1:18080/gm`（开发端口）或 `http://127.0.0.1:8080/gm`。密码填配置里的 `gm_token`，默认 `gm`。把 `gm_token` 留空则关闭 GM。
 
 ## 怎么测
 
@@ -111,7 +114,29 @@ go build -o bin/server ./cmd/server && go build -o bin/bot ./cmd/bot
 
 好友和世界聊天看：`go test ./internal/social ./cmd/server`。
 
-### 4. 压力测试（需要先开服务器）
+### 4. GM 填充电脑（需要先开服务器）
+
+人不够 4 个时，用网页把空座位填成电脑。电脑和 `cmd/bot` 用同一套 `internal/ai`，会吃碰杠胡。
+
+1. 启动服务器：`./bin/server configs/dev.yaml`
+2. 游戏里开房、自己入座（也可以先不入座）
+3. 浏览器打开 `http://127.0.0.1:18080/gm`
+4. 密码填 `gm`，点保存
+5. 填 6 位房号，点「填充电脑」（或先点「刷新列表」再点该房间的按钮）
+6. 游戏里应看到空位变成「电脑1」…「电脑4」，并且已经准备
+7. 真人点准备后，房主开局即可
+
+也可以不用网页：
+
+```bash
+curl -s -H 'X-GM-Token: gm' http://127.0.0.1:18080/gm/api/rooms
+curl -s -H 'X-GM-Token: gm' -H 'Content-Type: application/json' \
+  -d '{"room_id":"012345"}' http://127.0.0.1:18080/gm/api/addbot
+```
+
+对局已经开始时不能再加电脑。四个座位都有人时会提示房间满。结算后电脑仍保持准备，方便再开一局。电脑的 `uid` 是负数，客户端显示座位上的 `name` 即可。
+
+### 5. 压力测试（需要先开服务器）
 
 压测程序是笨的：打牌只打最后一张、别人出牌一律过，这样压的是服务器而不是本机算番。不要用 `./bin/bot` 开很多房，那个会先把压测机 CPU 打满。
 
@@ -160,6 +185,18 @@ go tool pprof http://127.0.0.1:18080/debug/pprof/heap
 ### GET /healthz
 
 返回 `ok`。
+
+### GM（管理员网页，不是给游戏客户端用的）
+
+配置了 `gm_token` 才会开启。开发/正式配置默认密码是 `gm`。
+
+| 功能 | 方法 | 路径 | 说明 |
+|---|---|---|---|
+| 网页 | `GET` | `/gm` | 几个按钮：填房号、填充电脑、刷新房间列表 |
+| 房间列表 | `GET` | `/gm/api/rooms` | 请求头 `X-GM-Token` |
+| 填充电脑 | `POST` | `/gm/api/addbot` | JSON `{"room_id":"012345"}`，把头里带 `X-GM-Token` |
+
+成功时 `addbot` 返回该房间四个座位，`added` 是这次新坐下的电脑数量。电脑昵称 `电脑1`…`电脑4`，进房后自动准备。
 
 ## WebSocket `/ws`
 
@@ -237,10 +274,29 @@ Envelope { seq, cmd, body, code }
 - `max_conns` / `max_rooms` 上限
 - `chat_max_bytes` 聊天长度
 - `pprof` 是否挂到默认 HTTP 上（本进程用 DefaultServeMux，默认开启）
+- `gm_token` GM 网页密码；留空则关闭 `/gm`。公网请改成自己的密码
+- `log_level` 日志级别，默认 `info`。可选：`trace` `info` `warn` `error` `fatal`
+
+## 日志
+
+日志打到标准错误（终端里能看见），英文前缀，前面带级别。例：`[INFO] room started room=123456`。和牌时番种用中文名（和国标番种表一致）。
+
+| 级别 | 你会看到什么 | 进程会不会停 |
+|---|---|---|
+| `trace` | 每个函数怎么走（打牌、房间命令、协议分发）。房间很多时不要开，会刷屏 | 否 |
+| `info` | 启动、登录成功、开房/开局/结算。有人和牌时会打出番种，例如 `fans=七对(19):24,自摸(80):1` | 否 |
+| `warn` | 密码错、房间满、限流、非法动作、顶号、托管代打。还能继续跑 | 否 |
+| `error` | 数据库/编码/算番库出错，或某条连接、某一桌 panic 被接住 | 否 |
+| `fatal` | 建目录、打开数据库、监听端口失败。这时没法提供服务 | **是，进程退出** |
+
+默认 `info`。排错时把 yaml 改成 `log_level: trace` 再启动服务器。不要把密码或完整 Token 写进日志。
+
+某一桌或某条 WebSocket 里出了意料之外的 panic，服务器会记一条 error 并继续跑（那一桌可能会被拆掉），不会把整个进程打死。
 
 ## 工程结构
 
-- `cmd/server` 进程入口
+- `cmd/server` 进程入口（含 `/gm` 管理员页）
+- `internal/logx` 分级日志（trace/info/warn/error/fatal）和 panic recover
 - `cmd/bot` 四机器人对打验收（与 `internal/ai` 同一套策略）
 - `cmd/stress` 压力测试：登录/挂机/多房笨打/聊天好友
 - `internal/ai` 座位视角 + 吃碰杠胡决策
@@ -262,11 +318,11 @@ Envelope { seq, cmd, body, code }
 | `internal/settle` | 自摸/点炮/错和拆账、花不计入起和番 |
 | `internal/game` | 庄先打、截和、禁杠、海底、荒庄、错和、抢杠胡、托管代打 |
 | `internal/ai` | 8 番才胡、打孤张、上家吃、碰碰和型碰、叠牌墙自摸、四人对打一局 |
-| `internal/room` | 房主权限、满员、入座准备、开局发牌出牌、对局中断线不离座 |
+| `internal/room` | 房主权限、满员、入座准备、开局发牌出牌、对局中断线不离座、GM 填充电脑 |
 | `internal/auth` / `persist/sqlite` | 注册登录、Token 过期、好友表 |
 | `internal/social` | 聊天令牌桶、申请同意拒绝 |
-| `internal/netx` / `config` / `user` | 协议编解码、配置、昵称 |
-| `cmd/server` | `/healthz` 注册登录 HTTP、WS 鉴权失败/成功、聊天、开房 |
+| `internal/netx` / `config` / `user` / `logx` | 协议编解码、配置、昵称、日志级别与 recover |
+| `cmd/server` | `/healthz` 注册登录 HTTP、WS 鉴权失败/成功、聊天、开房、GM 填充电脑 |
 
 ## 番种 id
 
@@ -275,3 +331,7 @@ Envelope { seq, cmd, body, code }
 ## 第一版不做
 
 四圈换座、金币排位、观战录像、多进程、Redis/MySQL、短信登录。
+
+GM 以后还可以加：踢出电脑、改牌、跳过等待。现在只有「填充电脑」。电脑不会聊天、不能当房主。如果服务器挂在公网，请立刻改掉 `gm_token`，不需要 GM 时把这一项留空。
+
+日志目前只打到终端，没有写成文件、也不会按天切割。人多或压测时保持 `info`，不要开 `trace`。

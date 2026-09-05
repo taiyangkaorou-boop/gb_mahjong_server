@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/auth"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/config"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/game"
+	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/netx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/pb"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/persist/memory"
@@ -48,12 +48,24 @@ func main() {
 		cfgPath = os.Args[1]
 	}
 	cfg := config.Load(cfgPath)
+	// #region agent log
+	agentLog("A", "main.go:main", "config loaded", map[string]interface{}{
+		"cfgPath":      cfgPath,
+		"httpAddr":     cfg.HTTPAddr,
+		"gmTokenEmpty": strings.TrimSpace(cfg.GMToken) == "",
+		"gmTokenLen":   len(strings.TrimSpace(cfg.GMToken)),
+	})
+	// #endregion
+	if !logx.KnownLevel(cfg.LogLevel) {
+		logx.Warnf("unknown log_level %q, using info", cfg.LogLevel)
+	}
+	logx.SetLevel(logx.ParseLevel(cfg.LogLevel))
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-		log.Fatal(err)
+		logx.Fatalf("mkdir data_dir=%s: %v", cfg.DataDir, err)
 	}
 	db, err := sqlite.Open(filepath.Join(cfg.DataDir, "gbmj.db"))
 	if err != nil {
-		log.Fatal(err)
+		logx.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
@@ -67,7 +79,6 @@ func main() {
 	push := func(uid int64, cmd pb.Cmd, code int32, msg proto.Message) {
 		raw, err := netx.Encode(0, cmd, code, msg)
 		if err != nil {
-			log.Printf("encode: %v", err)
 			return
 		}
 		reg.Push(uid, raw)
@@ -82,10 +93,11 @@ func main() {
 	mux.HandleFunc("/v1/register", app.handleRegister)
 	mux.HandleFunc("/v1/login", app.handleLogin)
 	mux.HandleFunc("/ws", app.handleWS)
+	app.registerGM(mux)
 
-	log.Printf("listen %s data=%s", cfg.HTTPAddr, cfg.DataDir)
+	logx.Infof("listen %s data=%s log_level=%s", cfg.HTTPAddr, cfg.DataDir, logx.CurrentLevel())
 	if err := http.ListenAndServe(cfg.HTTPAddr, mux); err != nil {
-		log.Fatal(err)
+		logx.Fatalf("listen %s: %v", cfg.HTTPAddr, err)
 	}
 }
 
@@ -97,11 +109,13 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 
 func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		logx.Warnf("http register method=%s", r.Method)
 		http.Error(w, "method", 405)
 		return
 	}
 	var c cred
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&c); err != nil {
+		logx.Warnf("http register bad json")
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
 		return
 	}
@@ -119,11 +133,13 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		logx.Warnf("http login method=%s", r.Method)
 		http.Error(w, "method", 405)
 		return
 	}
 	var c cred
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&c); err != nil {
+		logx.Warnf("http login bad json")
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
 		return
 	}
@@ -138,12 +154,15 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
+	defer logx.Recover("handleWS")
 	if a.reg.Count() >= a.cfg.MaxConns {
+		logx.Warnf("ws rejected: max_conns")
 		http.Error(w, "full", 503)
 		return
 	}
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		logx.Warnf("ws upgrade: %v", err)
 		return
 	}
 	c := netx.NewConn(ws)
@@ -161,15 +180,18 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
 	_ = ws.SetReadDeadline(time.Now().Add(8 * time.Second))
 	_, raw, err := ws.ReadMessage()
 	if err != nil {
+		logx.Warnf("ws auth read: %v", err)
 		return
 	}
 	env, err := netx.Decode(raw)
 	if err != nil || env.Cmd != pb.Cmd_C2S_AUTH {
+		logx.Warnf("ws auth rejected: first packet invalid")
 		failAuth(envSeq(env))
 		return
 	}
 	var au pb.C2SAuth
 	if err := netx.UnmarshalBody(env, &au); err != nil {
+		logx.Warnf("ws auth rejected: bad body")
 		failAuth(env.Seq)
 		return
 	}
@@ -182,6 +204,7 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
 	c.UID, c.Name = uid, name
 	go c.WriteLoop()
 	if old := a.reg.Bind(uid, c); old != nil && old != c {
+		logx.Warnf("ws replace uid=%d", uid)
 		old.Close()
 	}
 	a.on.Set(uid, true)
@@ -193,6 +216,7 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
 			a.rooms.Disconnect(uid)
 		}
 	}()
+	logx.Infof("ws auth uid=%d name=%s", uid, name)
 	a.reply(c, env.Seq, pb.Cmd_S2C_AUTH, 0, &pb.S2CAuth{Uid: uid, Name: name})
 	a.notifyFriends(uid)
 	_ = a.rooms.Sync(uid)
@@ -201,6 +225,7 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
 		_ = ws.SetReadDeadline(time.Now().Add(120 * time.Second))
 		_, raw, err := ws.ReadMessage()
 		if err != nil {
+			logx.Infof("ws disconnect uid=%d: %v", c.UID, err)
 			return
 		}
 		env, err := netx.Decode(raw)
@@ -231,6 +256,7 @@ func (a *App) notifyFriends(uid int64) {
 	for _, id := range ids {
 		friends, pending, err := a.soc.Snapshot(id)
 		if err != nil {
+			logx.Errorf("ws friend snapshot uid=%d peer=%d: %v", uid, id, err)
 			continue
 		}
 		raw, err := netx.Encode(0, pb.Cmd_S2C_FRIEND_SYNC, 0, toFriendSync(friends, pending))
@@ -253,13 +279,31 @@ func toFriendSync(friends, pending []social.Item) *pb.S2CFriendSync {
 }
 
 func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
+	defer func() {
+		if p := recover(); p != nil {
+			logx.Errorf("panic recovered where=dispatch uid=%d cmd=%v panic=%v", c.UID, env.Cmd, p)
+			a.reply(c, env.Seq, pb.Cmd_S2C_ERROR, int32(pb.Code_CODE_BAD_ACTION), nil)
+		}
+	}()
+	logx.Tracef("ws dispatch uid=%d cmd=%v seq=%d", c.UID, env.Cmd, env.Seq)
 	fail := func(code pb.Code) {
+		logx.Warnf("ws reject uid=%d cmd=%v code=%v", c.UID, env.Cmd, code)
 		a.reply(c, env.Seq, pb.Cmd_S2C_ERROR, int32(code), nil)
+	}
+	bind := func(msg proto.Message) bool {
+		if err := netx.UnmarshalBody(env, msg); err != nil {
+			logx.Warnf("ws unmarshal uid=%d cmd=%v: %v", c.UID, env.Cmd, err)
+			fail(pb.Code_CODE_BAD_ACTION)
+			return false
+		}
+		return true
 	}
 	switch env.Cmd {
 	case pb.Cmd_C2S_CHAT:
 		var m pb.C2SChat
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if len(m.Text) == 0 || len(m.Text) > a.cfg.ChatMaxBytes {
 			fail(pb.Code_CODE_BAD_ACTION)
 			return
@@ -276,7 +320,9 @@ func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
 		a.reg.ForEach(func(o *netx.Conn) { o.Send(raw) })
 	case pb.Cmd_C2S_FRIEND_ASK:
 		var m pb.C2SFriendAsk
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.soc.Ask(c.UID, m.Peer); err != nil {
 			fail(pb.Code_CODE_BAD_ACTION)
 			return
@@ -285,7 +331,9 @@ func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
 		a.pushFriends(m.Peer)
 	case pb.Cmd_C2S_FRIEND_RESP:
 		var m pb.C2SFriendResp
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.soc.Respond(c.UID, m.Peer, m.Accept); err != nil {
 			fail(pb.Code_CODE_BAD_ACTION)
 			return
@@ -295,40 +343,49 @@ func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
 	case pb.Cmd_C2S_FRIEND_LIST:
 		a.pushFriends(c.UID)
 	case pb.Cmd_C2S_ROOM_CREATE:
-		id, err := a.rooms.Create(c.UID)
+		_, err := a.rooms.Create(c.UID)
 		if err != nil {
 			fail(mapRoomErr(err))
 			return
 		}
 		_ = a.rooms.Sync(c.UID)
-		log.Printf("room %s created by %d", id, c.UID)
 	case pb.Cmd_C2S_ROOM_JOIN:
 		var m pb.C2SRoomJoin
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.rooms.Join(c.UID, strings.TrimSpace(m.RoomId)); err != nil {
 			fail(mapRoomErr(err))
 		}
 	case pb.Cmd_C2S_ROOM_SIT:
 		var m pb.C2SRoomSit
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.rooms.Sit(c.UID, int(m.Seat)); err != nil {
 			fail(mapRoomErr(err))
 		}
 	case pb.Cmd_C2S_ROOM_READY:
 		var m pb.C2SRoomReady
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.rooms.Ready(c.UID, m.Ready); err != nil {
 			fail(mapRoomErr(err))
 		}
 	case pb.Cmd_C2S_ROOM_KICK:
 		var m pb.C2SRoomKick
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.rooms.Kick(c.UID, m.Uid); err != nil {
 			fail(mapRoomErr(err))
 		}
 	case pb.Cmd_C2S_ROOM_INVITE:
 		var m pb.C2SRoomInvite
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		if err := a.rooms.Invite(c.UID, m.Uid); err != nil {
 			fail(mapRoomErr(err))
 		}
@@ -340,7 +397,9 @@ func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
 		_ = a.rooms.Leave(c.UID)
 	case pb.Cmd_C2S_ACTION:
 		var m pb.C2SAction
-		_ = netx.UnmarshalBody(env, &m)
+		if !bind(&m) {
+			return
+		}
 		act := game.Action{
 			TurnID: m.TurnId,
 			Type:   fromPBAct(m.Type),
@@ -362,6 +421,7 @@ func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
 func (a *App) pushFriends(uid int64) {
 	friends, pending, err := a.soc.Snapshot(uid)
 	if err != nil {
+		logx.Errorf("ws push friends uid=%d: %v", uid, err)
 		return
 	}
 	raw, err := netx.Encode(0, pb.Cmd_S2C_FRIEND_SYNC, 0, toFriendSync(friends, pending))

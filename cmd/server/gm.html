@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>国标麻将 GM</title>
+  <style>
+    :root { --bg:#f4efe6; --card:#fffaf3; --ink:#2b2118; --muted:#7a6a58; --line:#e4d8c6; --ok:#2f7d4a; --bad:#b42318; --btn:#3d6b4f; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }
+    main { max-width: 760px; margin: 0 auto; padding: 28px 16px 48px; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    p.lead { margin: 0 0 22px; color: var(--muted); line-height: 1.5; }
+    section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; }
+    h2 { font-size: 15px; margin: 0 0 12px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; background: #fff; }
+    .row { display: flex; gap: 8px; align-items: stretch; }
+    .row input { flex: 1; }
+    button { border: 0; border-radius: 8px; background: var(--btn); color: #fff; padding: 10px 16px; font-size: 15px; cursor: pointer; white-space: nowrap; }
+    button:hover { filter: brightness(1.05); }
+    button.secondary { background: #6d5c4d; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; }
+    .empty { color: var(--muted); padding: 8px 0; }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; line-height: 1.45; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>国标麻将 GM</h1>
+    <p class="lead">给管理员用的小面板。先填密码（和配置文件里的 <code>gm_token</code> 一样），再填 6 位房号，点「填充电脑」。空座位会坐下电脑，电脑用和内置机器人一样的 AI，并自动准备。</p>
+
+    <section>
+      <h2>1. 密码</h2>
+      <div class="row">
+        <input id="token" type="password" placeholder="gm_token" autocomplete="off" />
+        <button class="secondary" type="button" id="saveToken">保存</button>
+      </div>
+      <div class="hint">开发配置默认密码是 gm。密码只存在你这台电脑的浏览器里。</div>
+    </section>
+
+    <section>
+      <h2>2. 房间</h2>
+      <div class="row" style="margin-bottom:12px">
+        <input id="roomId" placeholder="6 位房号，例如 012345" maxlength="6" />
+        <button type="button" id="addBot">填充电脑</button>
+        <button class="secondary" type="button" id="refresh">刷新列表</button>
+      </div>
+      <div id="rooms"><div class="empty">点「刷新列表」查看当前房间。</div></div>
+    </section>
+
+    <section>
+      <h2>3. 结果</h2>
+      <pre id="log">还没有操作。</pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const tokenInput = $("token");
+    tokenInput.value = localStorage.getItem("gm_token") || "";
+
+    $("saveToken").onclick = () => {
+      localStorage.setItem("gm_token", tokenInput.value.trim());
+      say("密码已保存。", true);
+    };
+
+    $("refresh").onclick = () => loadRooms();
+    $("addBot").onclick = () => addBot($("roomId").value.trim());
+
+    function headers() {
+      return { "Content-Type": "application/json", "X-GM-Token": tokenInput.value.trim() };
+    }
+
+    function say(text, ok) {
+      const el = $("log");
+      el.className = ok ? "ok" : "bad";
+      el.textContent = text;
+    }
+
+    async function loadRooms() {
+      try {
+        const resp = await fetch("/gm/api/rooms", { headers: headers() });
+        const data = await resp.json();
+        if (resp.status === 401) {
+          say("密码不对。请看配置文件里的 gm_token。", false);
+          return;
+        }
+        if (!resp.ok) {
+          say(data.error || ("刷新失败 HTTP " + resp.status), false);
+          return;
+        }
+        renderRooms(data.rooms || []);
+        say("房间列表已刷新，共 " + (data.rooms || []).length + " 间。", true);
+      } catch (e) {
+        say("刷新失败：" + e, false);
+      }
+    }
+
+    function renderRooms(rooms) {
+      const box = $("rooms");
+      if (!rooms.length) {
+        box.innerHTML = '<div class="empty">现在没有房间。请先在游戏里开房，再把 6 位房号填上来。</div>';
+        return;
+      }
+      const rows = rooms.map((r) => {
+        const seats = (r.seats || []).map((s) => {
+          if (!s.uid) return "空";
+          const tag = s.bot ? "电脑" : "人";
+          const ready = s.ready ? "已准备" : "未准备";
+          return (s.name || ("uid" + s.uid)) + "（" + tag + "，" + ready + "）";
+        }).join(" / ");
+        return "<tr><td>" + r.room_id + "</td><td>" + r.owner + "</td><td>" + seats + "</td><td><button type='button' data-room='" + r.room_id + "'>填充电脑</button></td></tr>";
+      }).join("");
+      box.innerHTML = "<table><thead><tr><th>房号</th><th>房主 uid</th><th>座位</th><th></th></tr></thead><tbody>" + rows + "</tbody></table>";
+      box.querySelectorAll("button[data-room]").forEach((btn) => {
+        btn.onclick = () => {
+          $("roomId").value = btn.getAttribute("data-room");
+          addBot(btn.getAttribute("data-room"));
+        };
+      });
+    }
+
+    async function addBot(roomId) {
+      if (!/^\d{6}$/.test(roomId)) {
+        say("请填写 6 位数字房号。", false);
+        return;
+      }
+      localStorage.setItem("gm_token", tokenInput.value.trim());
+      try {
+        const resp = await fetch("/gm/api/addbot", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ room_id: roomId }),
+        });
+        const data = await resp.json();
+        if (resp.status === 401) {
+          say("密码不对。", false);
+          return;
+        }
+        if (!resp.ok) {
+          say(explain(data.error) || ("失败 HTTP " + resp.status), false);
+          await loadRooms();
+          return;
+        }
+        say("房间 " + roomId + " 已填充 " + data.added + " 个电脑。电脑已自动准备，房主可以开局。", true);
+        renderRooms([data]);
+        $("roomId").value = roomId;
+      } catch (e) {
+        say("请求失败：" + e, false);
+      }
+    }
+
+    function explain(err) {
+      if (err === "not found") return "找不到这个房间。请确认房号，或先点刷新列表。";
+      if (err === "bad state") return "对局已经开始，不能再加电脑。";
+      if (err === "room full") return "四个座位都有人了，没有空位。";
+      return err;
+    }
+  </script>
+</body>
+</html>

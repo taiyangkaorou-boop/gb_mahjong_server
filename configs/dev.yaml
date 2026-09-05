@@ -7,3 +7,5 @@ max_conns: 10000
 max_rooms: 2000
 chat_max_bytes: 64
 pprof: true
+log_level: info    # trace | info | warn | error | fatal
+gm_token: "gm"
