@@ -1,0 +1,31 @@
+# binaries
+/server
+/bot
+/bin/
+cmd/server/server
+cmd/bot/bot
+
+# data
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# build
+/build/
+cgo/gbmj/*.a
+cgo/gbmj/*.o
+cgo/gbmj/*.so
+
+# go
+/vendor/
+
+# ide
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# pprof
+cpu.pprof
+mem.pprof

@@ -1,0 +1,146 @@
+syntax = "proto3";
+package gbmj;
+option go_package = "github.com/taiyangkaorou-boop/GB_mahjong_server/internal/pb";
+
+// Cmd 是 Envelope.cmd。C2S 为客户端请求，S2C 为服务器推送/回包。
+enum Cmd {
+  CMD_UNSPECIFIED = 0;
+  C2S_AUTH = 1;
+  S2C_AUTH = 2;
+  C2S_CHAT = 10;
+  S2C_CHAT = 11;
+  C2S_FRIEND_ASK = 20;
+  C2S_FRIEND_RESP = 21;
+  C2S_FRIEND_LIST = 22;
+  S2C_FRIEND_SYNC = 23;
+  C2S_ROOM_CREATE = 40;
+  C2S_ROOM_JOIN = 41;
+  C2S_ROOM_SIT = 42;
+  C2S_ROOM_KICK = 43;
+  C2S_ROOM_INVITE = 44;
+  C2S_ROOM_START = 45;
+  C2S_ROOM_LEAVE = 47;
+  C2S_ROOM_READY = 48;
+  S2C_ROOM_STATE = 46;
+  C2S_ACTION = 80;
+  S2C_GAME_EVENT = 81;
+  S2C_DEAL = 82;
+  S2C_SETTLE = 83;
+  S2C_ERROR = 90;
+}
+
+enum Code {
+  CODE_OK = 0;
+  CODE_AUTH_FAIL = 1;
+  CODE_RATE_LIMITED = 2;
+  CODE_PERM_DENIED = 3;
+  CODE_NOT_FOUND = 4;
+  CODE_BAD_STATE = 5;
+  CODE_BAD_ACTION = 6;
+  CODE_ROOM_FULL = 7;
+  CODE_DUP = 8;
+}
+
+message Envelope {
+  uint32 seq = 1;
+  Cmd cmd = 2;
+  bytes body = 3;
+  int32 code = 4;
+}
+
+enum ActionType {
+  ACT_UNSPECIFIED = 0;
+  ACT_PASS = 1;
+  ACT_DISCARD = 2;
+  ACT_CHI = 3;
+  ACT_PENG = 4;
+  ACT_GANG_MING = 5;
+  ACT_GANG_AN = 6;
+  ACT_GANG_JIA = 7;
+  ACT_HU = 8;
+  ACT_DRAW = 9;
+  ACT_BUHUA = 10;
+  ACT_READY = 11;
+  ACT_SIT = 12;
+}
+
+message C2SAuth { string token = 1; }
+message S2CAuth { int64 uid = 1; string name = 2; }
+
+message C2SChat { bytes text = 1; }
+message S2CChat { int64 uid = 1; bytes text = 2; }
+
+message C2SFriendAsk { int64 peer = 1; }
+message C2SFriendResp { int64 peer = 1; bool accept = 2; }
+message FriendItem {
+  int64 uid = 1;
+  string name = 2;
+  bool online = 3;
+}
+message S2CFriendSync {
+  repeated FriendItem friends = 1;
+  repeated FriendItem pending = 2;
+}
+
+message C2SRoomCreate {}
+message C2SRoomJoin { string room_id = 1; }
+message C2SRoomSit { uint32 seat = 1; }
+message C2SRoomKick { int64 uid = 1; }
+message C2SRoomInvite { int64 uid = 1; }
+message C2SRoomStart {}
+message C2SRoomLeave {}
+message C2SRoomReady { bool ready = 1; }
+
+message SeatInfo {
+  int64 uid = 1;
+  string name = 2;
+  bool ready = 3;
+  bool online = 4;
+}
+message S2CRoomState {
+  string room_id = 1;
+  int64 owner = 2;
+  repeated SeatInfo seats = 3;
+  uint32 phase = 4;
+  string invite_hint = 5;
+}
+
+message C2SAction {
+  uint32 turn_id = 1;
+  ActionType type = 2;
+  uint32 tile = 3;
+  uint32 chi_mid = 4;
+}
+
+message S2CGameEvent {
+  uint32 turn_id = 1;
+  ActionType type = 2;
+  uint32 seat = 3;
+  uint32 tile = 4;
+  bytes tiles = 5;
+  uint32 wall_left = 6;
+  uint32 mask = 7;
+}
+
+message S2CDeal {
+  uint32 seat = 1;
+  bytes hand = 2;
+  uint32 banker = 3;
+  uint32 wind = 4;
+  uint32 turn_id = 5;
+}
+
+message FanItem {
+  uint32 id = 1;
+  uint32 score = 2;
+}
+
+message S2CSettle {
+  uint32 winner = 1;
+  int32 hu_kind = 2; // 0荒庄 1自摸 2点炮 3抢杠 4错和
+  int32 fan = 3;
+  repeated FanItem fans = 4;
+  repeated int32 scores = 5;
+  bytes hands = 6;
+  uint32 discarder = 7;
+}
