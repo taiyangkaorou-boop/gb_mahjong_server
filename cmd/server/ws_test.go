@@ -47,7 +47,7 @@ func newWSServer(t *testing.T) *httptest.Server {
 			return
 		}
 		app.reg.Push(uid, raw)
-	}, users, nil, time.Second, 10, db.AreFriends)
+	}, users, nil, time.Second, 0, 10, db.AreFriends)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/register", app.handleRegister)
 	mux.HandleFunc("/v1/login", app.handleLogin)

@@ -82,7 +82,10 @@ message S2CFriendSync {
   repeated FriendItem pending = 2;
 }
 
-message C2SRoomCreate {}
+message C2SRoomCreate {
+  uint32 turn_sec = 1;  // 每回合免费决策秒数，0=服务器默认 10
+  uint32 extra_sec = 2; // 每人整局储备秒数，0=服务器默认 20
+}
 message C2SRoomJoin { string room_id = 1; }
 message C2SRoomSit { uint32 seat = 1; }
 message C2SRoomKick { int64 uid = 1; }
@@ -103,6 +106,8 @@ message S2CRoomState {
   repeated SeatInfo seats = 3;
   uint32 phase = 4;
   string invite_hint = 5;
+  uint32 turn_sec = 6;  // 本房每回合免费秒数
+  uint32 extra_sec = 7; // 本房每人整局储备秒数
 }
 
 message C2SAction {
@@ -120,6 +125,9 @@ message S2CGameEvent {
   bytes tiles = 5;
   uint32 wall_left = 6;
   uint32 mask = 7;
+  uint32 wait_ms = 8;                 // 你这一步距被代打/代过还剩多少毫秒
+  repeated uint32 extra_left_ms = 9;  // 固定 4 个，各座位剩余储备毫秒
+  uint32 turn_ms = 10;                // 每回合免费决策毫秒，默认 10000
 }
 
 message S2CDeal {
@@ -128,6 +136,9 @@ message S2CDeal {
   uint32 banker = 3;
   uint32 wind = 4;
   uint32 turn_id = 5;
+  uint32 wait_ms = 6;
+  repeated uint32 extra_left_ms = 7;
+  uint32 turn_ms = 8;
 }
 
 message FanItem {

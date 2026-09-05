@@ -136,8 +136,11 @@ type Table struct {
 	JiaGangSeat      int
 	HaidiDraw        bool
 	Claims           [4]claim
-	Deadline         time.Time
-	Timeout          time.Duration
+	Deadline         time.Time     // 下一次有人会被代打/代过的时刻
+	Timeout          time.Duration // 每回合免费决策时间（默认 10 秒）
+	Extra            time.Duration // 每人开局储备总量（默认 20 秒）
+	ExtraLeft        [4]time.Duration
+	TurnEnd          time.Time // 当前窗口免费时间结束；超时后扣 ExtraLeft
 	Judge            HuFunc
 	Finished         *settle.Result
 	drawnThisTurn    bool

@@ -83,7 +83,7 @@ func main() {
 		}
 		reg.Push(uid, raw)
 	}
-	app.rooms = room.NewManager(push, users, rules.NewCGOEngine(), cfg.ActionTimeout, cfg.MaxRooms, db.AreFriends)
+	app.rooms = room.NewManager(push, users, rules.NewCGOEngine(), cfg.ActionTimeout, cfg.ExtraTimeout, cfg.MaxRooms, db.AreFriends)
 
 	mux := http.DefaultServeMux
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +343,12 @@ func (a *App) dispatch(c *netx.Conn, env *pb.Envelope) {
 	case pb.Cmd_C2S_FRIEND_LIST:
 		a.pushFriends(c.UID)
 	case pb.Cmd_C2S_ROOM_CREATE:
-		_, err := a.rooms.Create(c.UID)
+		var req pb.C2SRoomCreate
+		if !bind(&req) {
+			return
+		}
+		turn, extra := roomTimerFromCreate(req)
+		_, err := a.rooms.CreateTimed(c.UID, turn, extra)
 		if err != nil {
 			fail(mapRoomErr(err))
 			return
@@ -429,6 +434,27 @@ func (a *App) pushFriends(uid int64) {
 		return
 	}
 	a.reg.Push(uid, raw)
+}
+
+func roomTimerFromCreate(req pb.C2SRoomCreate) (turn, extra time.Duration) {
+	turn, extra = 0, -1
+	if req.TurnSec > 0 {
+		turn = clampSec(req.TurnSec, 3, 120)
+	}
+	if req.ExtraSec > 0 {
+		extra = clampSec(req.ExtraSec, 1, 300)
+	}
+	return
+}
+
+func clampSec(v, min, max uint32) time.Duration {
+	if v < min {
+		v = min
+	}
+	if v > max {
+		v = max
+	}
+	return time.Duration(v) * time.Second
 }
 
 func mapRoomErr(err error) pb.Code {

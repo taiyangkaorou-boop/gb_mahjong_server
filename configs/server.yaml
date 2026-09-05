@@ -2,6 +2,7 @@ http_addr: ":8080"
 data_dir: "./data"
 token_ttl_hours: 72
 action_timeout_ms: 10000
+extra_timeout_ms: 20000
 reconnect_sec: 60
 max_conns: 10000
 max_rooms: 2000

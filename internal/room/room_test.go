@@ -23,7 +23,7 @@ func TestKickAndStartPermission(t *testing.T) {
 	_, _ = db.CreateUser("a", []byte("x"))
 	_, _ = db.CreateUser("b", []byte("x"))
 	users := &user.Service{DB: db}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, func(a, b int64) bool { return true })
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, func(a, b int64) bool { return true })
 	id, err := m.Create(1)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestKickAndStartPermission(t *testing.T) {
 
 func TestCannotJoinTwoRooms(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	id1, err := m.Create(1)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestCannotJoinTwoRooms(t *testing.T) {
 
 func TestStartNeedsFourReady(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	id, err := m.Create(1)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestStartNeedsFourReady(t *testing.T) {
 
 func TestMaxRoomsAndInvite(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 1, func(a, b int64) bool { return a == b })
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 1, func(a, b int64) bool { return a == b })
 	id, err := m.Create(1)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestMaxRoomsAndInvite(t *testing.T) {
 
 func TestDisconnectLeavesIdleRoom(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	if _, err := m.Create(1); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestStartDealsAndDiscard(t *testing.T) {
 				discards++
 			}
 		}
-	}, users, nil, time.Second, 10, nil)
+	}, users, nil, time.Second, 0, 10, nil)
 	_ = fourReady(t, m)
 	if err := m.Start(1); err != nil {
 		t.Fatal(err)
@@ -186,6 +186,15 @@ func TestStartDealsAndDiscard(t *testing.T) {
 	mu.Unlock()
 	if nDeal != 4 || d0 == nil || len(d0.Hand) < 14 {
 		t.Fatalf("deals=%d banker=%v", nDeal, d0)
+	}
+	if d0.TurnMs != 1000 {
+		t.Fatalf("turn_ms=%d", d0.TurnMs)
+	}
+	if d0.WaitMs == 0 || d0.WaitMs > 1000 {
+		t.Fatalf("wait_ms=%d", d0.WaitMs)
+	}
+	if len(d0.ExtraLeftMs) != 4 {
+		t.Fatalf("extra_left=%v", d0.ExtraLeftMs)
 	}
 	if err := m.Action(2, game.Action{TurnID: d0.TurnId, Type: game.ActDiscard, Tile: tile.Tile(d0.Hand[0])}); err != game.ErrNotYourTurn {
 		t.Fatalf("non-banker discard: %v", err)
@@ -208,7 +217,7 @@ func TestStartDealsAndDiscard(t *testing.T) {
 
 func TestInGameDisconnectKeepsSeat(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	_ = fourReady(t, m)
 	if err := m.Start(1); err != nil {
 		t.Fatal(err)
@@ -228,7 +237,7 @@ func TestInGameDisconnectKeepsSeat(t *testing.T) {
 
 func TestAddBotsFillsEmptySeats(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	id, err := m.Create(1)
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +290,7 @@ func TestAddBotsFillsEmptySeats(t *testing.T) {
 
 func TestAddBotsRejectsInGame(t *testing.T) {
 	users := &user.Service{}
-	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	m := NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	id := fourReady(t, m)
 	defer m.Leave(1)
 	if err := m.Start(1); err != nil {
@@ -299,7 +308,7 @@ func TestAddBotsFourPlaySettle(t *testing.T) {
 		if cmd == pb.Cmd_S2C_SETTLE {
 			settled = true
 		}
-	}, users, rules.NewCGOEngine(), time.Second, 10, nil)
+	}, users, rules.NewCGOEngine(), time.Second, 0, 10, nil)
 	id, err := m.Create(1)
 	if err != nil {
 		t.Fatal(err)
@@ -333,5 +342,29 @@ func TestAddBotsFourPlaySettle(t *testing.T) {
 	}
 	if readyBots != 4 {
 		t.Fatalf("bots should stay ready after settle, got %d", readyBots)
+	}
+}
+
+func TestCreateTimedShowsInState(t *testing.T) {
+	users := &user.Service{}
+	var st *pb.S2CRoomState
+	m := NewManager(func(_ int64, cmd pb.Cmd, _ int32, msg proto.Message) {
+		if cmd == pb.Cmd_S2C_ROOM_STATE {
+			if s, ok := msg.(*pb.S2CRoomState); ok {
+				cp := proto.Clone(s).(*pb.S2CRoomState)
+				st = cp
+			}
+		}
+	}, users, nil, 10*time.Second, 20*time.Second, 10, nil)
+	id, err := m.CreateTimed(1, 8*time.Second, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Leave(1)
+	if err := m.Sync(1); err != nil {
+		t.Fatal(err)
+	}
+	if st == nil || st.RoomId != id || st.TurnSec != 8 || st.ExtraSec != 15 {
+		t.Fatalf("state=%+v id=%s", st, id)
 	}
 }

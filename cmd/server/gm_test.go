@@ -23,7 +23,7 @@ func newGMServer(t *testing.T, token string) (*httptest.Server, *App) {
 		cfg:   config.Config{GMToken: token, HTTPAddr: ":0"},
 		users: users,
 	}
-	app.rooms = room.NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 10, nil)
+	app.rooms = room.NewManager(func(int64, pb.Cmd, int32, proto.Message) {}, users, nil, time.Second, 0, 10, nil)
 	mux := http.NewServeMux()
 	app.registerGM(mux)
 	srv := httptest.NewServer(mux)

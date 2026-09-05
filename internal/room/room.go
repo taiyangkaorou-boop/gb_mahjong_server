@@ -36,12 +36,13 @@ type Manager struct {
 	users    *user.Service
 	eng      rules.Engine
 	timeout  time.Duration
+	extra    time.Duration
 	maxRooms int
 	friends  func(a, b int64) bool
 	nextBot  int64
 }
 
-func NewManager(push PushFunc, users *user.Service, eng rules.Engine, timeout time.Duration, maxRooms int, friends func(a, b int64) bool) *Manager {
+func NewManager(push PushFunc, users *user.Service, eng rules.Engine, timeout, extra time.Duration, maxRooms int, friends func(a, b int64) bool) *Manager {
 	return &Manager{
 		rooms:    map[string]*Room{},
 		byUser:   map[int64]string{},
@@ -49,6 +50,7 @@ func NewManager(push PushFunc, users *user.Service, eng rules.Engine, timeout ti
 		users:    users,
 		eng:      eng,
 		timeout:  timeout,
+		extra:    extra,
 		maxRooms: maxRooms,
 		friends:  friends,
 		nextBot:  -1,
@@ -68,6 +70,18 @@ func (m *Manager) Count() int {
 }
 
 func (m *Manager) Create(uid int64) (string, error) {
+	return m.CreateTimed(uid, 0, -1)
+}
+
+// CreateTimed 开房。turn/extra <=0 时用服务器默认（测试里 extra=0 表示没有储备）。
+// extra < 0 表示用 Manager 默认储备。
+func (m *Manager) CreateTimed(uid int64, turn, extra time.Duration) (string, error) {
+	if turn <= 0 {
+		turn = m.timeout
+	}
+	if extra < 0 {
+		extra = m.extra
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.byUser[uid] != "" {
@@ -79,11 +93,11 @@ func (m *Manager) Create(uid int64) (string, error) {
 		return "", ErrFull
 	}
 	id := m.newID()
-	r := newRoom(id, uid, m)
+	r := newRoom(id, uid, m, turn, extra)
 	m.rooms[id] = r
 	m.byUser[uid] = id
 	go r.loop()
-	logx.Infof("room created room=%s uid=%d", id, uid)
+	logx.Infof("room created room=%s uid=%d turn=%s extra=%s", id, uid, turn, extra)
 	return id, nil
 }
 
@@ -223,21 +237,26 @@ type cmd struct {
 }
 
 type Room struct {
-	id      string
-	owner   int64
-	seats   [4]int64
-	ready   [4]bool
-	bot     [4]bool
-	views   [4]*ai.View
-	inbox   chan cmd
-	quit    chan struct{}
-	table   *game.Table
-	mgr     *Manager
-	members map[int64]struct{}
+	id           string
+	owner        int64
+	seats        [4]int64
+	ready        [4]bool
+	bot          [4]bool
+	views        [4]*ai.View
+	inbox        chan cmd
+	quit         chan struct{}
+	table        *game.Table
+	mgr          *Manager
+	members      map[int64]struct{}
+	turnTimeout  time.Duration
+	extraTimeout time.Duration
 }
 
-func newRoom(id string, owner int64, mgr *Manager) *Room {
-	r := &Room{id: id, owner: owner, inbox: make(chan cmd, 256), quit: make(chan struct{}), mgr: mgr, members: map[int64]struct{}{owner: {}}}
+func newRoom(id string, owner int64, mgr *Manager, turn, extra time.Duration) *Room {
+	r := &Room{
+		id: id, owner: owner, inbox: make(chan cmd, 256), quit: make(chan struct{}), mgr: mgr,
+		members: map[int64]struct{}{owner: {}}, turnTimeout: turn, extraTimeout: extra,
+	}
 	return r
 }
 
@@ -488,7 +507,8 @@ func (r *Room) start(uid int64) error {
 		}
 		return legal, wrong, fr
 	}
-	r.table = game.NewTable(uids, 0, r.mgr.timeout, judge, nil)
+	r.table = game.NewTable(uids, 0, r.turnTimeout, judge, nil)
+	r.table.SetExtra(r.extraTimeout)
 	r.initBotViews()
 	evs, err := r.table.Deal(time.Now())
 	if err != nil {
@@ -604,7 +624,11 @@ func (r *Room) seatName(i int) string {
 }
 
 func (r *Room) state(hint string) *pb.S2CRoomState {
-	st := &pb.S2CRoomState{RoomId: r.id, Owner: r.owner, InviteHint: hint, Seats: make([]*pb.SeatInfo, 4)}
+	st := &pb.S2CRoomState{
+		RoomId: r.id, Owner: r.owner, InviteHint: hint, Seats: make([]*pb.SeatInfo, 4),
+		TurnSec:  uint32(r.turnTimeout / time.Second),
+		ExtraSec: uint32(r.extraTimeout / time.Second),
+	}
 	if r.table != nil {
 		st.Phase = uint32(r.table.Phase)
 	}
@@ -681,6 +705,26 @@ func tilesBytes(ts []tile.Tile) []byte {
 	return b
 }
 
+func (r *Room) fillDealTimer(msg *pb.S2CDeal, seat int) {
+	if r.table == nil {
+		return
+	}
+	now := time.Now()
+	msg.WaitMs = r.table.WaitMS(seat, now)
+	msg.TurnMs = r.table.TurnMS()
+	msg.ExtraLeftMs = r.table.ExtraLeftMS()
+}
+
+func (r *Room) fillEventTimer(msg *pb.S2CGameEvent, seat int) {
+	if r.table == nil {
+		return
+	}
+	now := time.Now()
+	msg.WaitMs = r.table.WaitMS(seat, now)
+	msg.TurnMs = r.table.TurnMS()
+	msg.ExtraLeftMs = r.table.ExtraLeftMS()
+}
+
 func (r *Room) emitOne(ev game.Event) {
 	if ev.Settle != nil {
 		logx.Infof("room settle room=%s kind=%s fan=%d winner=%d fans=%s scores=%v", r.id, settle.KindName(ev.Settle.Kind), ev.Settle.Fan, ev.Settle.Winner, settle.FormatFans(ev.Settle.Items), ev.Settle.Scores)
@@ -723,6 +767,7 @@ func (r *Room) emitOne(ev game.Event) {
 				Wind:   uint32(ev.Wind),
 				TurnId: ev.TurnID,
 			}
+			r.fillDealTimer(msg, i)
 			r.mgr.push(r.seats[i], pb.Cmd_S2C_DEAL, 0, msg)
 		}
 		return
@@ -743,7 +788,9 @@ func (r *Room) emitOne(ev game.Event) {
 	if ev.PrivateSeat >= 0 {
 		uid := r.seats[ev.PrivateSeat]
 		if uid != 0 {
-			r.mgr.push(uid, pb.Cmd_S2C_GAME_EVENT, 0, msg)
+			priv := proto.Clone(msg).(*pb.S2CGameEvent)
+			r.fillEventTimer(priv, ev.PrivateSeat)
+			r.mgr.push(uid, pb.Cmd_S2C_GAME_EVENT, 0, priv)
 		}
 		pub := proto.Clone(msg).(*pb.S2CGameEvent)
 		if ev.Type == game.ActDraw {
@@ -754,13 +801,17 @@ func (r *Room) emitOne(ev game.Event) {
 			if i == ev.PrivateSeat || r.seats[i] == 0 {
 				continue
 			}
-			r.mgr.push(r.seats[i], pb.Cmd_S2C_GAME_EVENT, 0, pub)
+			one := proto.Clone(pub).(*pb.S2CGameEvent)
+			r.fillEventTimer(one, i)
+			r.mgr.push(r.seats[i], pb.Cmd_S2C_GAME_EVENT, 0, one)
 		}
 		return
 	}
 	for i := 0; i < 4; i++ {
 		if r.seats[i] != 0 {
-			r.mgr.push(r.seats[i], pb.Cmd_S2C_GAME_EVENT, 0, msg)
+			one := proto.Clone(msg).(*pb.S2CGameEvent)
+			r.fillEventTimer(one, i)
+			r.mgr.push(r.seats[i], pb.Cmd_S2C_GAME_EVENT, 0, one)
 		}
 	}
 }

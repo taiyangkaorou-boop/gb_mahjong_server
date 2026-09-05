@@ -61,7 +61,7 @@ func (t *Table) Deal(now time.Time) ([]Event, error) {
 	t.Phase = PhaseSelfAct
 	t.Current = t.Banker
 	t.AfterMeldNoKong = false
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	deal := Event{IsDeal: true, Banker: t.Banker, Wind: t.Prevailing, TurnID: t.TurnID, WallLeft: t.wallLeft(), PrivateSeat: -1}
 	for i := 0; i < 4; i++ {
 		deal.DealHands[i] = append([]tile.Tile(nil), t.Seats[i].Hand...)
@@ -142,7 +142,7 @@ func (t *Table) Tick(now time.Time) ([]Event, error) {
 	}
 	switch t.Phase {
 	case PhaseSelfAct:
-		if !t.Seats[t.Current].Hosted && now.Before(t.Deadline) {
+		if !t.Seats[t.Current].Hosted && !t.seatTimedOut(t.Current, now) {
 			return nil, nil
 		}
 		p := &t.Seats[t.Current]
@@ -153,7 +153,7 @@ func (t *Table) Tick(now time.Time) ([]Event, error) {
 			}
 			disc = p.Hand[len(p.Hand)-1]
 		}
-		logx.Tracef("game Tick auto-discard seat=%d hosted=%v", t.Current, t.Seats[t.Current].Hosted)
+		logx.Tracef("game Tick auto-discard seat=%d hosted=%v extra=%s", t.Current, t.Seats[t.Current].Hosted, t.ExtraLeft[t.Current])
 		return t.Apply(t.Current, Action{TurnID: t.TurnID, Type: ActDiscard, Tile: disc}, now)
 	case PhaseResp, PhaseQiang:
 		for i := 0; i < 4; i++ {
@@ -166,11 +166,13 @@ func (t *Table) Tick(now time.Time) ([]Event, error) {
 			if t.Claims[i].got {
 				continue
 			}
-			if t.Seats[i].Hosted || !now.Before(t.Deadline) {
+			if t.Seats[i].Hosted || t.seatTimedOut(i, now) {
+				t.consumeExtra(i, now)
 				t.Claims[i] = claim{got: true, act: Action{Type: ActPass}}
 			}
 		}
 		if !t.allClaimed() {
+			t.Deadline = t.nextDeadline()
 			return nil, nil
 		}
 		if t.Phase == PhaseResp {
@@ -218,6 +220,7 @@ func (t *Table) doDiscard(seat int, x tile.Tile, now time.Time) ([]Event, error)
 	}
 	p.Hand = next
 	tile.Sort(p.Hand)
+	t.consumeExtra(seat, now)
 	p.Discards = append(p.Discards, x)
 	t.LastDiscard = x
 	t.LastDiscarder = seat
@@ -229,15 +232,9 @@ func (t *Table) doDiscard(seat int, x tile.Tile, now time.Time) ([]Event, error)
 	t.bump()
 	ev := evBase(t, ActDiscard, seat)
 	ev.Tile = x
-	if t.Wall.Left() == 0 {
-		t.Phase = PhaseResp
-		t.resetClaims(seat)
-		t.Deadline = now.Add(t.Timeout)
-		return []Event{ev}, nil
-	}
 	t.Phase = PhaseResp
 	t.resetClaims(seat)
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	return []Event{ev}, nil
 }
 
@@ -298,9 +295,11 @@ func (t *Table) applyResp(seat int, act Action, now time.Time) ([]Event, error) 
 	default:
 		return nil, ErrBadAction
 	}
+	t.consumeExtra(seat, now)
 	if t.allClaimed() {
 		return t.resolveResp(now)
 	}
+	t.Deadline = t.nextDeadline()
 	return nil, nil
 }
 
@@ -388,7 +387,7 @@ func (t *Table) takePeng(seat int, now time.Time) ([]Event, error) {
 	t.AfterMeldNoKong = true
 	t.LastDraw = 0
 	t.bump()
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	ev := evBase(t, ActPeng, seat)
 	ev.Tile = x
 	ev.Tiles = []tile.Tile{x, x}
@@ -422,7 +421,7 @@ func (t *Table) takeChi(seat int, mid tile.Tile, now time.Time) ([]Event, error)
 	t.AfterMeldNoKong = true
 	t.LastDraw = 0
 	t.bump()
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	ev := evBase(t, ActChi, seat)
 	ev.Tile = x
 	ev.Tiles = []tile.Tile{a, b}
@@ -469,6 +468,7 @@ func (t *Table) doAnGang(seat int, x tile.Tile, now time.Time) ([]Event, error) 
 	}
 	t.Seats[seat].Hand = next
 	t.Seats[seat].Melds = append(t.Seats[seat].Melds, rules.Meld{Type: rules.MeldAnGang, Tiles: []tile.Tile{x, x, x, x}, Offer: 0, Mid: x})
+	t.consumeExtra(seat, now)
 	t.AfterKong = true
 	t.AfterKongThenHua = false
 	t.bump()
@@ -504,8 +504,9 @@ func (t *Table) doJiaGang(seat int, x tile.Tile, now time.Time) ([]Event, error)
 	t.JiaGangSeat = seat
 	t.Phase = PhaseQiang
 	t.resetClaims(seat)
+	t.consumeExtra(seat, now)
 	t.bump()
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	ev := evBase(t, ActJiaGang, seat)
 	ev.Tile = x
 	return []Event{ev}, nil
@@ -522,9 +523,11 @@ func (t *Table) applyQiang(seat int, act Action, now time.Time) ([]Event, error)
 		return nil, ErrBadAction
 	}
 	t.Claims[seat] = claim{got: true, act: act}
+	t.consumeExtra(seat, now)
 	if t.allClaimed() {
 		return t.resolveQiang(now)
 	}
+	t.Deadline = t.nextDeadline()
 	return nil, nil
 }
 
@@ -564,7 +567,7 @@ func (t *Table) kongReplace(seat int, now time.Time) ([]Event, error) {
 	t.Current = seat
 	t.Phase = PhaseSelfAct
 	t.HaidiDraw = t.Wall.Left() == 0
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	return t.announceDraw(seat, x)
 }
 
@@ -586,7 +589,7 @@ func (t *Table) drawFor(seat int, now time.Time) ([]Event, error) {
 	t.AfterKongThenHua = false
 	t.HaidiDraw = t.Wall.Left() == 0
 	t.bump()
-	t.Deadline = now.Add(t.Timeout)
+	t.armDeadline(now)
 	return t.announceDraw(seat, x)
 }
 
@@ -604,6 +607,9 @@ func (t *Table) tryHu(seat int, zimo bool, win tile.Tile, gang bool, now time.Ti
 	logx.Tracef("game tryHu seat=%d zimo=%v gang=%v win=%s", seat, zimo, gang, win)
 	if t.Judge == nil {
 		return nil, ErrBadState
+	}
+	if zimo {
+		t.consumeExtra(seat, now)
 	}
 	ctx := t.Context(seat, win, zimo, gang)
 	legal, wrong, fr := t.Judge(ctx)
@@ -630,7 +636,6 @@ func (t *Table) tryHu(seat int, zimo bool, win tile.Tile, gang bool, now time.Ti
 		Items:     fr.Items,
 		Scores:    settle.PayHu(zimo, fan, seat, t.LastDiscarder),
 	}
-	_ = now
 	return t.finish(res)
 }
 

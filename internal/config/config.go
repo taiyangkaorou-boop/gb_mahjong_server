@@ -13,6 +13,7 @@ type Config struct {
 	DataDir       string
 	TokenTTL      time.Duration
 	ActionTimeout time.Duration
+	ExtraTimeout  time.Duration
 	Reconnect     time.Duration
 	MaxConns      int
 	MaxRooms      int
@@ -28,6 +29,7 @@ func Default() Config {
 		DataDir:       "./data",
 		TokenTTL:      72 * time.Hour,
 		ActionTimeout: 10 * time.Second,
+		ExtraTimeout:  20 * time.Second,
 		Reconnect:     60 * time.Second,
 		MaxConns:      10000,
 		MaxRooms:      2000,
@@ -68,6 +70,10 @@ func Load(path string) Config {
 		case "action_timeout_ms":
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				cfg.ActionTimeout = time.Duration(n) * time.Millisecond
+			}
+		case "extra_timeout_ms":
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				cfg.ExtraTimeout = time.Duration(n) * time.Millisecond
 			}
 		case "reconnect_sec":
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
