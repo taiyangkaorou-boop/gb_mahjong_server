@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,14 +48,6 @@ func main() {
 		cfgPath = os.Args[1]
 	}
 	cfg := config.Load(cfgPath)
-	// #region agent log
-	agentLog("A", "main.go:main", "config loaded", map[string]interface{}{
-		"cfgPath":      cfgPath,
-		"httpAddr":     cfg.HTTPAddr,
-		"gmTokenEmpty": strings.TrimSpace(cfg.GMToken) == "",
-		"gmTokenLen":   len(strings.TrimSpace(cfg.GMToken)),
-	})
-	// #endregion
 	if !logx.KnownLevel(cfg.LogLevel) {
 		logx.Warnf("unknown log_level %q, using info", cfg.LogLevel)
 	}
@@ -85,7 +77,7 @@ func main() {
 	}
 	app.rooms = room.NewManager(push, users, rules.NewCGOEngine(), cfg.ActionTimeout, cfg.ExtraTimeout, cfg.MaxRooms, db.AreFriends)
 
-	mux := http.DefaultServeMux
+	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
@@ -94,11 +86,23 @@ func main() {
 	mux.HandleFunc("/v1/login", app.handleLogin)
 	mux.HandleFunc("/ws", app.handleWS)
 	app.registerGM(mux)
+	if cfg.Pprof {
+		registerPprof(mux)
+		logx.Infof("pprof enabled path=/debug/pprof/")
+	}
 
 	logx.Infof("listen %s data=%s log_level=%s", cfg.HTTPAddr, cfg.DataDir, logx.CurrentLevel())
 	if err := http.ListenAndServe(cfg.HTTPAddr, mux); err != nil {
 		logx.Fatalf("listen %s: %v", cfg.HTTPAddr, err)
 	}
+}
+
+func registerPprof(mux *http.ServeMux) {
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

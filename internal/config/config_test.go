@@ -22,3 +22,10 @@ func TestLoadDevDefaults(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestLoadProdYaml(t *testing.T) {
+	got := Load("../../configs/prod.yaml")
+	if got.HTTPAddr != ":8080" || got.Pprof || got.GMToken != "" || got.LogLevel != "info" {
+		t.Fatalf("prod yaml %+v", got)
+	}
+}

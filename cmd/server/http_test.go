@@ -102,3 +102,35 @@ func TestMapRoomErrAndFromPBAct(t *testing.T) {
 		t.Fatal("discard")
 	}
 }
+
+func TestPprofOnlyWhenEnabled(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("ok"))
+	})
+	srvOff := httptest.NewServer(mux)
+	defer srvOff.Close()
+	resp, err := http.Get(srvOff.URL + "/debug/pprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("pprof off want 404 got %d", resp.StatusCode)
+	}
+
+	muxOn := http.NewServeMux()
+	registerPprof(muxOn)
+	srvOn := httptest.NewServer(muxOn)
+	defer srvOn.Close()
+	resp, err = http.Get(srvOn.URL + "/debug/pprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("heap")) {
+		t.Fatalf("pprof on %d %s", resp.StatusCode, body)
+	}
+}

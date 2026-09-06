@@ -9,7 +9,8 @@
 | 协议源文件（以后改协议以这个为准） | `/home/ros/work/GB_mahjong_server/api/proto/gbmj.proto` |
 | 番种中文名对照（服务端源码） | `/home/ros/work/GB_mahjong_server/internal/rules/fanlist.go` |
 | 开发环境配置（端口 18080） | `/home/ros/work/GB_mahjong_server/configs/dev.yaml` |
-| 正式环境配置（端口 8080） | `/home/ros/work/GB_mahjong_server/configs/server.yaml` |
+| 本机正式端口配置（8080，带 GM） | `/home/ros/work/GB_mahjong_server/configs/server.yaml` |
+| 云服务器配置（8080，默认关 GM / pprof） | `/home/ros/work/GB_mahjong_server/configs/prod.yaml` |
 
 服务端是两段：
 
@@ -22,10 +23,11 @@
 
 下面的 `127.0.0.1` 是本机联调地址。部署到别的机器时，只改主机，**后面的路径不要改**。
 
-| 环境 | 配置文件绝对路径 | HTTP 根地址 | WebSocket 完整路径 |
+| 环境 | 配置文件 | HTTP 根地址 | WebSocket 完整路径 |
 |---|---|---|---|
-| 开发 | `/home/ros/work/GB_mahjong_server/configs/dev.yaml` | `http://127.0.0.1:18080` | `ws://127.0.0.1:18080/ws` |
-| 正式 | `/home/ros/work/GB_mahjong_server/configs/server.yaml` | `http://127.0.0.1:8080` | `ws://127.0.0.1:8080/ws` |
+| 开发 | `configs/dev.yaml` | `http://127.0.0.1:18080` | `ws://127.0.0.1:18080/ws` |
+| 本机正式端口 | `configs/server.yaml` | `http://127.0.0.1:8080` | `ws://127.0.0.1:8080/ws` |
+| 云服务器 | `configs/prod.yaml` | `http://服务器IP:8080` | `ws://服务器IP:8080/ws` |
 
 HTTP 三条完整路径（开发环境）：
 

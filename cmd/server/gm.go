@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/logx"
 	"github.com/taiyangkaorou-boop/GB_mahjong_server/internal/room"
@@ -16,42 +14,15 @@ import (
 //go:embed gm.html
 var gmHTML []byte
 
-// #region agent log
-func agentLog(hypothesisId, location, message string, data map[string]interface{}) {
-	f, err := os.OpenFile("/home/ros/work/GB_mahjong_server/.cursor/debug-da195a.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	b, _ := json.Marshal(map[string]interface{}{
-		"sessionId":    "da195a",
-		"runId":        "pre-fix",
-		"hypothesisId": hypothesisId,
-		"location":     location,
-		"message":      message,
-		"data":         data,
-		"timestamp":    time.Now().UnixMilli(),
-	})
-	_, _ = f.Write(append(b, '\n'))
-}
-
-// #endregion
-
 func (a *App) registerGM(mux *http.ServeMux) {
 	tokenLen := len(strings.TrimSpace(a.cfg.GMToken))
 	if tokenLen == 0 {
-		// #region agent log
-		agentLog("B", "gm.go:registerGM", "gm routes skipped, token empty", map[string]interface{}{"enabled": false, "tokenLen": 0})
-		// #endregion
 		logx.Infof("gm disabled")
 		return
 	}
 	mux.HandleFunc("/gm", a.handleGMPage)
 	mux.HandleFunc("/gm/api/rooms", a.handleGMRooms)
 	mux.HandleFunc("/gm/api/addbot", a.handleGMAddBot)
-	// #region agent log
-	agentLog("B", "gm.go:registerGM", "gm routes registered", map[string]interface{}{"enabled": true, "tokenLen": tokenLen, "htmlBytes": len(gmHTML)})
-	// #endregion
 	logx.Infof("gm page enabled path=/gm")
 }
 
@@ -68,9 +39,6 @@ func (a *App) gmAuthorized(r *http.Request) bool {
 }
 
 func (a *App) handleGMPage(w http.ResponseWriter, r *http.Request) {
-	// #region agent log
-	agentLog("C", "gm.go:handleGMPage", "gm page request", map[string]interface{}{"path": r.URL.Path, "method": r.Method, "htmlBytes": len(gmHTML)})
-	// #endregion
 	if r.Method != http.MethodGet {
 		http.Error(w, "method", 405)
 		return

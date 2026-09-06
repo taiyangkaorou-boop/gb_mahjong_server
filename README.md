@@ -2,7 +2,7 @@
 
 单进程 Go 服务：HTTP 登录 + WebSocket/Protobuf 对局。友谊房单局，SQLite 存用户/好友，算番复用 [zheng-fan/GB-Mahjong](https://github.com/zheng-fan/GB-Mahjong)（CGO）。
 
-当前发布：`v0.0.1`。GitHub：[taiyangkaorou-boop/GB_mahjong_server](https://github.com/taiyangkaorou-boop/GB_mahjong_server)。
+当前发布：`v0.0.2`。GitHub：[taiyangkaorou-boop/GB_mahjong_server](https://github.com/taiyangkaorou-boop/GB_mahjong_server)。
 
 - `main`：已发布快照（打过 tag 的版本）
 - `dev`：日常改代码请在这个分支
@@ -57,9 +57,171 @@ go run ./cmd/bot -addr http://127.0.0.1:8080 -n 4
 
 健康检查：`curl http://127.0.0.1:8080/healthz` 应返回 `ok`。
 
-数据文件默认 `./data/gbmj.db`。本机 8080 被占用时可改 `http_addr`，或用 `./server configs/dev.yaml`（18080）。pprof：`http://127.0.0.1:8080/debug/pprof/`。
+数据文件默认 `./data/gbmj.db`。本机 8080 被占用时可改 `http_addr`，或用 `./server configs/dev.yaml`（18080）。pprof：配置里 `pprof: true` 时才开，地址 `http://127.0.0.1:8080/debug/pprof/`。正式环境 `configs/prod.yaml` 默认关掉。
 
-GM 页面：服务器起来后用浏览器打开 `http://127.0.0.1:18080/gm`（开发端口）或 `http://127.0.0.1:8080/gm`。密码填配置里的 `gm_token`，默认 `gm`。把 `gm_token` 留空则关闭 GM。
+GM 页面：服务器起来后用浏览器打开 `http://127.0.0.1:18080/gm`（开发端口）或 `http://127.0.0.1:8080/gm`。密码填配置里的 `gm_token`，开发配置默认 `gm`。把 `gm_token` 留空则关闭 GM。
+
+## 怎么部署（给别人连 / 挂到云服务器）
+
+这是**一个程序 + 一个配置文件 + 一个数据库文件**。没有 Redis、没有 MySQL。账号和好友存在 SQLite 文件里；房间和对局在内存里，**进程一停，正在打的牌就没了**。
+
+两条路上线，选一条即可：
+
+| 方式 | 适合谁 | 服务器上要装什么 |
+|---|---|---|
+| systemd（上面第 1–4 步） | 一台 Linux 云主机，长期开机 | Go、g++、git |
+| Docker（下面第 7 步） | 已经会 Docker，或不想在机器上装 Go | Docker（或 Docker Compose） |
+
+三份配置怎么选：
+
+| 文件 | 端口 | 给谁用 |
+|---|---|---|
+| `configs/dev.yaml` | 18080 | 本机改代码、跑机器人 |
+| `configs/server.yaml` | 8080 | 本机按正式端口试一下 |
+| `configs/prod.yaml` | 8080 | 真正挂出去：关掉 pprof，默认关掉 GM |
+
+客户端对接时只改主机，路径不变：`http://你的IP:8080/v1/login`、`ws://你的IP:8080/ws`。有 HTTPS 时改成 `https://域名/...` 和 `wss://域名/ws`。
+
+### 1. 买一台 Linux，装编译工具
+
+必须在 **Linux 上现场编译**（里面有 C++ 算番库，Windows 编出来的文件拷过去不能用）。Ubuntu / Debian 示例：
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential g++
+# 安装 Go 1.18+（没有的话按 https://go.dev/dl/ 装）
+go version
+```
+
+云厂商安全组 / 防火墙放行 **8080**（HTTP + WebSocket 共用这一个端口）。
+
+### 2. 拉代码并编译
+
+```bash
+sudo mkdir -p /opt/gbmj
+sudo chown "$USER:$USER" /opt/gbmj
+git clone --recurse-submodules https://github.com/taiyangkaorou-boop/GB_mahjong_server.git /opt/gbmj
+cd /opt/gbmj
+git checkout main          # 上线用已发布版本；改代码请用 dev
+# 若 third_party/GB-Mahjong 是空的：
+git submodule update --init --recursive
+
+mkdir -p bin data
+CGO_ENABLED=1 go build -o bin/server ./cmd/server
+```
+
+看到 `bin/server` 这个文件就编好了。先试跑：
+
+```bash
+./bin/server configs/prod.yaml
+```
+
+另开一个窗口：`curl http://127.0.0.1:8080/healthz` 应返回 `ok`。用浏览器或手机访问 `http://服务器公网IP:8080/healthz` 也应返回 `ok`（不通就查安全组）。停掉试跑：终端里 Ctrl+C。
+
+### 3. 上线前必改
+
+编辑 `configs/prod.yaml`：
+
+- 需要 GM 填电脑：把 `gm_token` 改成只有你知道的长密码；不需要就保持空（`/gm` 关闭）
+- 人多时把系统文件句柄抬高（否则连接一多会 `too many open files`）：`ulimit -n 65535`
+
+**不要**把 `pprof` 改成 `true` 后直接挂公网（那是调试接口）。
+
+### 4. 开机自启（推荐）
+
+仓库里有模板 `deploy/gbmj.service`。程序会装到 `/opt/gbmj`：
+
+```bash
+sudo cp /opt/gbmj/deploy/gbmj.service /etc/systemd/system/gbmj.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now gbmj
+sudo systemctl status gbmj
+```
+
+常用命令：
+
+```bash
+sudo systemctl restart gbmj          # 重启（进行中的房间会丢）
+sudo journalctl -u gbmj -f           # 看日志
+curl http://127.0.0.1:8080/healthz   # 探活
+```
+
+备份账号数据：拷走 `/opt/gbmj/data/gbmj.db`（以及同目录可能出现的 `gbmj.db-wal` / `gbmj.db-shm`）。
+
+### 5. 想用域名和 HTTPS（可选）
+
+在前面加 Nginx，把 443 转到本机 8080。WebSocket 必须带升级头。示例：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name 你的域名;
+    # ssl_certificate / ssl_certificate_key 按你的证书填写
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 120s;
+    }
+}
+```
+
+这时把 `configs/prod.yaml` 的 `http_addr` 改成 `127.0.0.1:8080`（只让本机 Nginx 连，不直接对公网开 8080），客户端改用 `https://你的域名` 和 `wss://你的域名/ws`。
+
+### 6. 更新版本
+
+```bash
+cd /opt/gbmj
+git fetch --tags
+git checkout v0.0.2          # 换成你要上的 tag
+git submodule update --init --recursive
+CGO_ENABLED=1 go build -o bin/server ./cmd/server
+sudo systemctl restart gbmj
+```
+
+重启后：账号还在，正在开的房间和对局会清空。
+
+### 7. 用 Docker 跑（可选）
+
+**要不要用 Docker：** 编译依赖 Go + g++ + C++ 算番库，服务器上现场编最容易卡。已经装了 Docker 时，用镜像更省事。只有一台普通云主机、也愿意装 Go 的话，继续用上面的 systemd 就够了，不必再套一层。不要为这个项目上 Kubernetes。
+
+**母镜像在 Dockerfile 里，不在 docker-compose.yml 里。** `docker compose up --build` 会按 Dockerfile 先拉再编：
+
+| 阶段 | 母镜像 | 是什么 |
+|---|---|---|
+| 编译 | `golang:1.22-bookworm` | Debian 12 + Go，里面再装 g++ |
+| 运行 | `debian:bookworm-slim` | 同一代 Debian 的瘦身版，只留程序和 libstdc++ |
+
+不是 Ubuntu。Debian 和 Ubuntu 很像（都用 `apt`），官方 Go 镜像就是 Debian，跟着它走最省事。你的云主机可以是 Ubuntu——Docker 装在主机上即可，容器里自带上面那套 Debian，不要求主机也是 Debian。第一次构建需要能访问 Docker Hub（拉母镜像）。
+
+构建前子模块不能是空的：
+
+```bash
+git submodule update --init --recursive
+mkdir -p data
+docker compose up -d --build
+```
+
+国内拉 Go 模块慢时：
+
+```bash
+GOPROXY=https://goproxy.cn,direct docker compose up -d --build
+```
+
+成功：`curl http://127.0.0.1:8080/healthz` 返回 `ok`。  
+配置用仓库里的 `configs/prod.yaml`（改 GM 密码后 `docker compose restart` 即可，不用重新编镜像）。  
+账号数据在本机 `./data`，备份这个目录。
+
+```bash
+docker compose logs -f          # 看日志
+docker compose restart          # 重启（进行中的房间会丢）
+docker compose down             # 停掉；data 目录还在
+```
+
+镜像自己编：`docker build -t gbmj-server .`（不要把 Windows 上编的二进制拷进 Linux 容器，Dockerfile 会在 Linux 里重新编译）。
 
 ## 怎么测
 
@@ -265,7 +427,7 @@ Envelope { seq, cmd, body, code }
 - 操作时限默认 **10+20 秒**：每回合 10 秒免费思考，超时后扣该玩家整局共用的 20 秒储备；都用完则代打/代过。创建房间可改（`turn_sec`/`extra_sec`），配置见 `action_timeout_ms`、`extra_timeout_ms`
 - 断线后该座位立即托管（超时打牌 / 过）
 
-## 配置 `configs/server.yaml`
+## 配置 `configs/*.yaml`
 
 - `http_addr` 监听地址
 - `data_dir` SQLite 目录
@@ -275,8 +437,8 @@ Envelope { seq, cmd, body, code }
 - `reconnect_sec` 预留（当前新连接直接顶掉旧连接）
 - `max_conns` / `max_rooms` 上限
 - `chat_max_bytes` 聊天长度
-- `pprof` 是否挂到默认 HTTP 上（本进程用 DefaultServeMux，默认开启）
-- `gm_token` GM 网页密码；留空则关闭 `/gm`。公网请改成自己的密码
+- `pprof` 是否挂 `/debug/pprof/`。开发/本机 `server.yaml` 默认开；`prod.yaml` 默认关。公网不要开
+- `gm_token` GM 网页密码；留空则关闭 `/gm`。公网请改成自己的密码，或不需要就留空
 - `log_level` 日志级别，默认 `info`。可选：`trace` `info` `warn` `error` `fatal`
 
 ## 日志
@@ -295,9 +457,21 @@ Envelope { seq, cmd, body, code }
 
 某一桌或某条 WebSocket 里出了意料之外的 panic，服务器会记一条 error 并继续跑（那一桌可能会被拆掉），不会把整个进程打死。
 
+## 同时接待很多人（协程）
+
+服务器是单进程。自己开的后台任务只有两种：
+
+- **每人一条“写信”协程**：WebSocket 鉴权成功后 `go WriteLoop()`。读消息占用这条连接原来的 HTTP 协程；写出牌和 30 秒心跳必须另开一条，否则读和写会抢同一个连接。
+- **每间房一条“荷官”协程**：开房时 `go r.loop()`。进房、出牌、超时代打、电脑出牌都排成队，由这一条按顺序改牌桌。这样同一桌不会两个人同时改手牌。
+
+登录、GM 网页是 HTTP 自己为每个请求开的短任务。牌局倒计时不是每桌再开一条睡觉的协程，而是房间每 0.1 秒看一眼有没有人超时。
+
+满配大约：1 万连接 × 2 + 2 千房间 ≈ 2.2 万条协程，Go 扛得住。人多时先卡的是 SQLite 只允许 1 条数据库连接，以及所有桌子共用一把 C++ 算番锁，不是协程数量。
+
 ## 工程结构
 
 - `cmd/server` 进程入口（含 `/gm` 管理员页）
+- `Dockerfile` / `docker-compose.yml` 可选容器部署（SQLite 挂到 `./data`）
 - `internal/logx` 分级日志（trace/info/warn/error/fatal）和 panic recover
 - `cmd/bot` 四机器人对打验收（与 `internal/ai` 同一套策略）
 - `cmd/stress` 压力测试：登录/挂机/多房笨打/聊天好友
@@ -336,6 +510,8 @@ Envelope { seq, cmd, body, code }
 
 GM 以后还可以加：踢出电脑、改牌、跳过等待。现在只有「填充电脑」。电脑不会聊天、不能当房主。如果服务器挂在公网，请立刻改掉 `gm_token`，不需要 GM 时把这一项留空。
 
-日志目前只打到终端，没有写成文件、也不会按天切割。人多或压测时保持 `info`，不要开 `trace`。
+日志目前只打到终端（用 systemd 时看 `journalctl -u gbmj`），没有写成文件、也不会按天切割。人多或压测时保持 `info`，不要开 `trace`。
+
+部署两条路：Linux 上编译 + systemd，或 Docker Compose 守着同一个进程。没有自动发布、没有编排集群。重启会丢掉内存里的房间和对局，只保留 SQLite 里的账号/好友。挂公网前用 `configs/prod.yaml`，不要把 pprof 和默认 `gm` 密码暴露出去。
 
 倒计时只在发牌和对局事件里带，对局中途重连不会补手牌也不会补时钟。超时这一手是代打/代过，不会把人锁进「永久托管」（断线仍会立刻托管）。创建房间已经能传 `turn_sec`/`extra_sec`，客户端暂时不传就是默认 10+20。

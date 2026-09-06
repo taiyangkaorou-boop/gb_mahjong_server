@@ -1,0 +1,14 @@
+[Unit]
+Description=GB Mahjong Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gbmj
+ExecStart=/opt/gbmj/bin/server /opt/gbmj/configs/prod.yaml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

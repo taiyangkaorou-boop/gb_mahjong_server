@@ -1,0 +1,14 @@
+# 挂到云服务器 / 给别人连时用这份。本机开发请用 configs/dev.yaml。
+http_addr: ":8080"
+data_dir: "./data"
+token_ttl_hours: 72
+action_timeout_ms: 10000
+extra_timeout_ms: 20000
+reconnect_sec: 60
+max_conns: 10000
+max_rooms: 2000
+chat_max_bytes: 64
+pprof: false
+log_level: info
+# 公网默认关掉 GM。要用网页填电脑时，改成你自己的长密码，例如 "改成很难猜的密码"。
+gm_token: ""

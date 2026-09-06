@@ -23,6 +23,7 @@ cgo/gbmj/*.so
 # ide
 .idea/
 .vscode/
+.cursor/
 *.swp
 .DS_Store
 
